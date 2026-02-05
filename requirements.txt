@@ -1,0 +1,5 @@
+telethon
+aiohttp
+imageio-ffmpeg
+hachoir
+cryptg
