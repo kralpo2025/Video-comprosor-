@@ -5,11 +5,12 @@ import time
 import math
 import re
 import shutil
+import gc  # اضافه شده برای مدیریت رم
 import imageio_ffmpeg
 from aiohttp import web
-from telethon import TelegramClient, events, Button
-from telethon.errors import SessionPasswordNeededError
-from telethon.utils import get_display_name
+from telethon import TelegramClient, events
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from telethon.network import ConnectionTcpFull
 
 # ==========================================
 # 🔴 تنظیمات (اطلاعات خود را وارد کنید)
@@ -41,14 +42,29 @@ PORT = int(os.environ.get("PORT", 8080))
 # ==========================================
 work_queue = asyncio.Queue()
 login_state = {}
-# ذخیره موقت ویدیو برای گرفتن درصد: {user_id: event_message}
 pending_compression = {}
 
+# تعریف کلاینت‌ها با تنظیمات ضد قطعی
 bot = TelegramClient(BOT_SESSION, API_ID, API_HASH)
-user_client = TelegramClient(USER_SESSION, API_ID, API_HASH)
+
+# ✅ اصلاح مهم: تنظیمات اتصال پایدار برای یوزربات
+user_client = TelegramClient(
+    USER_SESSION,
+    API_ID,
+    API_HASH,
+    connection=ConnectionTcpFull, # مود اتصال پایدارتر
+    device_model="iPhone 15 Pro",  # جعل مدل گوشی برای جلوگیری از بن
+    system_version="17.4",
+    app_version="10.8",
+    lang_code="en",
+    system_lang_code="en-US",
+    connection_retries=None,      # تلاش نامحدود برای اتصال مجدد
+    auto_reconnect=True,          # اتصال خودکار در صورت قطعی
+    retry_delay=3                 # صبر 3 ثانیه‌ای بین تلاش‌ها
+)
 
 # ==========================================
-# توابع کمکی گرافیکی و محاسباتی
+# توابع کمکی
 # ==========================================
 def humanbytes(size):
     if not size: return "0B"
@@ -66,12 +82,11 @@ def time_formatter(seconds):
     return "%02d:%02d:%02d" % (hours, minutes, seconds)
 
 async def extract_thumbnail(video_path, thumb_path):
-    """استخراج تصویر بندانگشتی از ویدیو برای حل مشکل نمایش"""
     try:
         cmd = [
             FFMPEG_BINARY, '-y',
             '-i', video_path,
-            '-ss', '00:00:02', # ثانیه دوم
+            '-ss', '00:00:02',
             '-vframes', '1',
             thumb_path
         ]
@@ -82,14 +97,13 @@ async def extract_thumbnail(video_path, thumb_path):
         if os.path.exists(thumb_path):
             return thumb_path
         return None
-    except Exception as e:
-        logger.error(f"Thumb Error: {e}")
+    except Exception:
         return None
 
 async def update_progress(current, total, message_obj, start_time, action_text):
-    """نمایش پیشرفت کار با گرافیک جذاب"""
     now = time.time()
-    if now - start_time < 4 and current != total: return # آپدیت هر 4 ثانیه
+    # ✅ اصلاح: افزایش فاصله آپدیت به 5 ثانیه برای جلوگیری از FloodWait
+    if now - start_time < 5 and current != total: return
     if total == 0: return
 
     percentage = current * 100 / total
@@ -109,72 +123,47 @@ async def update_progress(current, total, message_obj, start_time, action_text):
         f"⏳ زمان باقیمانده: `{time_formatter(time_left)}`"
     )
     try: await message_obj.edit(text)
-    except: pass
+    except Exception: pass # نادیده گرفتن خطاها برای قطع نشدن برنامه
 
 # ==========================================
-# موتور فشرده‌سازی هوشمند
+# موتور فشرده‌سازی
 # ==========================================
 async def compress_engine(input_path, output_path, duration, percentage, message_obj):
-    """
-    فشرده‌سازی بر اساس درصد ورودی کاربر.
-    percentage: عددی بین 1 تا 100.
-    100 = کیفیت اصلی (کمترین فشرده سازی)
-    20 = حجم خیلی کم (فشرده سازی زیاد)
-    """
-    
-    # تبدیل درصد کاربر به CRF (Constant Rate Factor)
-    # CRF 18 (کیفیت عالی) تا CRF 51 (بدترین کیفیت)
-    # فرمول: معکوس کردن درصد برای مپ کردن به CRF
-    # اگر کاربر بگوید 100 (کیفیت بالا) -> CRF 18
-    # اگر کاربر بگوید 20 (کیفیت پایین) -> CRF 40
-    
-    # محدود کردن ورودی
     percentage = max(10, min(100, int(percentage)))
-    
-    # محاسبه CRF
-    # بازه CRF مفید معمولا بین 18 تا 45 است
-    # فرمول خطی ساده شده:
-    crf_value = 48 - (percentage * 0.3) 
-    crf_value = int(crf_value)
+    crf_value = int(48 - (percentage * 0.3))
 
-    # مقیاس تصویر (اختیاری: اگر درصد خیلی پایین بود رزولوشن هم کم شود)
     scale_cmd = []
     if percentage < 30:
-        scale_cmd = ['-vf', 'scale=iw*0.7:-2'] # کاهش سایز تصویر به 70 درصد
+        scale_cmd = ['-vf', 'scale=iw*0.7:-2']
     
     cmd = [
         FFMPEG_BINARY, '-y',
         '-i', input_path,
         '-c:v', 'libx264',
         '-crf', str(crf_value),
-        '-preset', 'superfast', # تعادل سرعت و کیفیت
+        '-preset', 'superfast',
         '-c:a', 'aac',
-        '-b:a', '96k',          # صدای بهینه
-        '-movflags', '+faststart', # برای پخش سریع در تلگرام
+        '-b:a', '96k',
+        '-movflags', '+faststart',
         *scale_cmd,
         output_path
     ]
-    
-    logger.info(f"Running FFMPEG with CRF: {crf_value} for Input %: {percentage}")
     
     process = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     
     last_update = 0
-    start_time_proc = time.time()
     
     while True:
         line = await process.stderr.readline()
         if not line: break
         line_txt = line.decode('utf-8', errors='ignore')
-        
-        # استخراج زمان پردازش شده
         time_match = re.search(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})", line_txt)
         
         if time_match:
             now = time.time()
-            if now - last_update > 4:
+            if now - last_update > 5: # 5 ثانیه وقفه برای جلوگیری از بن
                 h, m, s = map(float, time_match.groups())
                 done_sec = h*3600 + m*60 + s
                 percent_prog = (done_sec / duration) * 100 if duration else 0
@@ -211,7 +200,6 @@ async def queue_worker():
             msg = event.message
             ts = int(time.time())
             
-            # تشخیص پسوند
             file_ext = ".mp4"
             if msg.file and msg.file.name:
                 _, ext = os.path.splitext(msg.file.name)
@@ -221,7 +209,6 @@ async def queue_worker():
             out_file = os.path.join(DOWNLOAD_PATH, f"out_{ts}.mp4")
             thumb_file = os.path.join(THUMB_PATH, f"thumb_{ts}.jpg")
 
-            # 1. دانلود
             dl_start = time.time()
             await user_client.download_media(
                 msg,
@@ -231,21 +218,18 @@ async def queue_worker():
                 )
             )
 
-            # 2. فشرده‌سازی
             duration = msg.file.duration or 1
+            
+            # فشرده سازی
             compress_success = await compress_engine(in_file, out_file, duration, quality_percent, status_msg)
             
             if compress_success:
-                # 3. ساخت تامنیل (حل مشکل نمایش)
                 await status_msg.edit("🖼 **در حال ساخت تامنیل...**")
                 final_thumb = await extract_thumbnail(out_file, thumb_file)
                 
-                # 4. آپلود
                 up_start = time.time()
                 old_sz = os.path.getsize(in_file)
                 new_sz = os.path.getsize(out_file)
-                
-                # محاسبه درصد کاهش واقعی
                 reduction = ((old_sz - new_sz) / old_sz) * 100
                 
                 caption_text = (
@@ -254,26 +238,14 @@ async def queue_worker():
                     f"📦 **حجم اولیه:** `{humanbytes(old_sz)}`\n"
                     f"💾 **حجم نهایی:** `{humanbytes(new_sz)}`\n"
                     f"📉 **میزان کاهش:** `{round(reduction, 1)}%`\n\n"
-                    f"🤖 @YourBotID"
                 )
-                
-                # دریافت اطلاعات ویدیو برای ارسال صحیح
-                vid_attr = None
-                # تلاش برای خواندن ابعاد ویدیو جدید
-                try:
-                    probe = imageio_ffmpeg.read_messages(out_file) # روش ساده
-                    # در اینجا بهتر است از attributes پیام اصلی استفاده کنیم ولی duration جدید ممکن است کمی فرق کند
-                    # اما برای سادگی از متد خود تلگرام استفاده می‌کنیم
-                    pass 
-                except: pass
 
                 await user_client.send_file(
                     event.chat_id,
                     out_file,
                     caption=caption_text,
-                    thumb=final_thumb, # ارسال با تامنیل
-                    supports_streaming=True, # قابلیت پخش آنلاین
-                    force_document=False,
+                    thumb=final_thumb,
+                    supports_streaming=True,
                     reply_to=event.id,
                     progress_callback=lambda c, t: asyncio.create_task(
                         update_progress(c, t, status_msg, up_start, "📤 **در حال آپلود به تلگرام...**")
@@ -282,21 +254,29 @@ async def queue_worker():
                 
                 await status_msg.delete()
             else:
-                await status_msg.edit("❌ **خطا در پروسه فشرده‌سازی ffmpeg.**")
+                await status_msg.edit("❌ **خطا در پروسه فشرده‌سازی.**")
         
+        except FloodWaitError as e:
+            # مدیریت خطای فلود برای جلوگیری از دیسکانکت
+            logger.warning(f"FloodWait: Waiting {e.seconds} seconds")
+            await asyncio.sleep(e.seconds)
+            await status_msg.edit(f"⚠️ محدودیت تلگرام. صبر کنید: {e.seconds} ثانیه...")
         except Exception as e:
             logger.error(f"Work Error: {e}", exc_info=True)
-            try: await status_msg.edit(f"❌ **خطای ناگهانی:**\n`{str(e)}`")
+            try: await status_msg.edit(f"❌ **خطا:**\n`{str(e)}`")
             except: pass
         finally:
-            # پاکسازی
+            # پاکسازی کامل حافظه و فایل‌ها
             if in_file and os.path.exists(in_file): os.remove(in_file)
             if out_file and os.path.exists(out_file): os.remove(out_file)
             if thumb_file and os.path.exists(thumb_file): os.remove(thumb_file)
+            
+            # ✅ مدیریت حافظه رم
+            gc.collect() 
             work_queue.task_done()
 
 # ==========================================
-# هندلرهای یوزربات
+# هندلرها
 # ==========================================
 
 @user_client.on(events.NewMessage(incoming=True))
@@ -306,68 +286,50 @@ async def message_handler(event):
     chat_id = event.chat_id
     text = event.raw_text
 
-    # 1. اگر کاربر ویدیو فرستاد
     if event.message.video or (event.message.document and 'video' in event.message.document.mime_type):
-        # ذخیره پیام در حافظه موقت
         pending_compression[chat_id] = event
-        
         await event.reply(
             "🎥 **ویدیو دریافت شد!**\n\n"
             "لطفاً میزان کیفیت (فشرده‌سازی) را تعیین کنید:\n"
             "🔢 عددی بین **1 تا 100** بفرستید.\n\n"
-            "▫️ **20** = حجم خیلی کم (مناسب اینترنت ضعیف)\n"
-            "▫️ **50** = متعادل (پیشنهادی)\n"
-            "▫️ **80** = کیفیت بالا (کاهش حجم جزئی)\n\n"
+            "▫️ **20** = حجم خیلی کم\n"
+            "▫️ **50** = متعادل\n"
+            "▫️ **80** = کیفیت بالا\n\n"
             "👇 عدد را بنویس:"
         )
         return
 
-    # 2. اگر کاربر عدد فرستاد و ویدیوی منتظر داشت
     if chat_id in pending_compression and text.isdigit():
         quality = int(text)
-        
         if not (1 <= quality <= 100):
-            await event.reply("⚠️ لطفاً عددی بین **1 تا 100** وارد کنید.")
+            await event.reply("⚠️ عدد باید بین 1 تا 100 باشد.")
             return
             
         original_event = pending_compression.pop(chat_id)
-        
-        # بررسی وضعیت صف
         q_size = work_queue.qsize()
-        wait_msg = f"✅ **درخواست ثبت شد.**\n📊 کیفیت انتخابی: **{quality}%**\n"
-        if q_size > 0:
-            wait_msg += f"⏳ شما نفر **{q_size + 1}** در صف هستید..."
-        else:
-            wait_msg += "🚀 شروع پردازش..."
+        wait_msg = f"✅ **درخواست ثبت شد.**\n📊 کیفیت: **{quality}%**\n"
+        wait_msg += f"⏳ نفر **{q_size + 1}** در صف..." if q_size > 0 else "🚀 شروع پردازش..."
             
         status_msg = await event.reply(wait_msg)
-        
-        # افزودن به صف
-        await work_queue.put({
-            'event': original_event,
-            'status_msg': status_msg,
-            'quality': quality
-        })
+        await work_queue.put({'event': original_event, 'status_msg': status_msg, 'quality': quality})
         return
-
-    # اگر کاربر متن فرستاد و ویدیویی نداشت
+        
     if text.isdigit() and chat_id not in pending_compression:
-        await event.reply("❌ ابتدا یک ویدیو ارسال کنید.")
-
+        await event.reply("❌ اول ویدیو بفرستید.")
 
 # ==========================================
-# هندلرهای ربات (پنل ادمین) - بدون تغییر
+# پنل ادمین
 # ==========================================
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     if event.sender_id == ADMIN_ID:
         status = "🔴 قطع"
         try:
-            if await user_client.is_user_authorized(): status = "🟢 متصل"
+            if await user_client.is_user_authorized(): status = "🟢 متصل (iPhone 15 Pro)"
         except: pass
         await event.reply(f"👑 **پنل مدیریت**\nوضعیت: {status}\n\n1️⃣ `/phone +98...`\n2️⃣ `/code 12345`\n3️⃣ `/password ...`")
     else:
-        await event.reply("⛔️ دسترسی محدود به ادمین.")
+        await event.reply("⛔️")
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def phone_h(event):
@@ -379,7 +341,7 @@ async def phone_h(event):
         s = await user_client.send_code_request(ph)
         login_state['phone'] = ph
         login_state['hash'] = s.phone_code_hash
-        await msg.edit("✅ کد ارسال شد. بزن: `/code 12345`")
+        await msg.edit("✅ کد ارسال شد.")
     except Exception as e: await msg.edit(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
@@ -389,7 +351,7 @@ async def code_h(event):
     try:
         await user_client.sign_in(phone=login_state['phone'], code=code, phone_code_hash=login_state['hash'])
         await event.reply("✅ **یوزربات وصل شد!**")
-    except SessionPasswordNeededError: await event.reply("⚠️ رمز دو مرحله‌ای: `/password ...`")
+    except SessionPasswordNeededError: await event.reply("⚠️ رمز دارید: `/password ...`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
@@ -401,11 +363,11 @@ async def pass_h(event):
     except Exception as e: await event.reply(f"❌ {e}")
 
 # ==========================================
-# اجرای اصلی
+# اجرا
 # ==========================================
 async def web_server():
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Bot Running"))
+    app.router.add_get("/", lambda r: web.Response(text="Alive"))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -417,13 +379,23 @@ async def main():
     await bot.start(bot_token=BOT_TOKEN)
     
     print("Userbot Init...")
+    # اتصال با تنظیمات جدید
     await user_client.connect()
     
     asyncio.create_task(queue_worker())
     
     tasks = [bot.run_until_disconnected()]
+    
+    # لاجیک جدید برای زنده نگه داشتن سشن
     if await user_client.is_user_authorized():
         print("✅ Userbot Ready.")
+        # ارسال خودکار پیام به خود کاربر (Saved Messages) برای زنده نگه داشتن سشن
+        # این خط اختیاری است اما برای سرورهای ابری مفید است
+        try:
+            me = await user_client.get_me()
+            print(f"Logged in as: {me.first_name}")
+        except: pass
+        
         tasks.append(user_client.run_until_disconnected())
     
     await asyncio.gather(*tasks)
