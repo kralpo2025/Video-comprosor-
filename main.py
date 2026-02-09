@@ -4,8 +4,10 @@ import logging
 import time
 import math
 import re
-import gc  # Garbage Collector برای خالی کردن رم
+import gc
+import shutil
 import imageio_ffmpeg
+from aiohttp import web  # ✅ این خط در کد قبلی جا افتاده بود
 from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from telethon.network import ConnectionTcpFull
@@ -18,43 +20,49 @@ API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8430316476:AAGupmShC1KAgs3qXDRHGmzg1D7s6Z8wFXU"
 ADMIN_ID = 7419222963
 
-# مسیرها
+# تنظیمات سیستم
 BOT_SESSION = 'bot_session'
 USER_SESSION = 'user_session'
 DOWNLOAD_PATH = "downloads/"
 THUMB_PATH = "thumbs/"
+PORT = int(os.environ.get("PORT", 8080))
 
-# تنظیمات لاگ
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger("DiskSaverBot")
+# تنظیمات لاگینگ
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger("DiskCompressor")
 
-# ایجاد پوشه‌ها و پاکسازی اولیه
+# پاکسازی فایل‌های قدیمی در لحظه استارت (برای خالی کردن دیسک)
 if os.path.exists(DOWNLOAD_PATH):
-    import shutil
-    shutil.rmtree(DOWNLOAD_PATH)
+    shutil.rmtree(DOWNLOAD_PATH, ignore_errors=True)
+if os.path.exists(THUMB_PATH):
+    shutil.rmtree(THUMB_PATH, ignore_errors=True)
+
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs(THUMB_PATH, exist_ok=True)
 
 FFMPEG_BINARY = imageio_ffmpeg.get_ffmpeg_exe()
 
 # ==========================================
-# کلاینت‌ها و متغیرها
+# وضعیت‌ها و کلاینت‌ها
 # ==========================================
 work_queue = asyncio.Queue()
 login_state = {}
-pending_jobs = {}  # برای ذخیره موقت ایونت تا زمانی که کاربر کیفیت را انتخاب کند
+pending_jobs = {}
 last_edit_time = {}
 
 bot = TelegramClient(BOT_SESSION, API_ID, API_HASH)
 
-# ✅ تنظیمات اتصال پایدار برای جلوگیری از لاگ‌اوت
+# تنظیمات اتصال برای پایداری حداکثری
 user_client = TelegramClient(
     USER_SESSION,
     API_ID,
     API_HASH,
     connection=ConnectionTcpFull,
-    device_model="Desktop",  # جا زدن به عنوان دسکتاپ برای پایداری
-    app_version="4.10.0",
+    device_model="Desktop",
+    app_version="4.16.30",
     system_version="Windows 11",
     lang_code="en",
     system_lang_code="en-US",
@@ -64,7 +72,7 @@ user_client = TelegramClient(
 )
 
 # ==========================================
-# توابع کمکی
+# توابع کمکی (Utility Functions)
 # ==========================================
 def humanbytes(size):
     if not size: return "0B"
@@ -82,7 +90,7 @@ def time_formatter(seconds):
     return "%02d:%02d:%02d" % (hours, minutes, seconds)
 
 async def extract_thumbnail(video_path, thumb_path):
-    """ساخت تامنیل برای اینکه ویدیو بدون عکس نباشد"""
+    """استخراج کاور ویدیو با حداقل مصرف منابع"""
     try:
         cmd = [
             FFMPEG_BINARY, '-y',
@@ -91,7 +99,6 @@ async def extract_thumbnail(video_path, thumb_path):
             '-vframes', '1',
             thumb_path
         ]
-        # استفاده از DEVNULL برای جلوگیری از پر شدن بافر
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
@@ -102,12 +109,12 @@ async def extract_thumbnail(video_path, thumb_path):
     except: return None
 
 async def safe_edit(message_obj, text):
-    """ویرایش ایمن پیام با رعایت محدودیت‌های تلگرام"""
+    """ویرایش ایمن پیام برای جلوگیری از بن شدن"""
     msg_id = message_obj.id
     now = time.time()
     
-    # فقط هر 5 ثانیه یکبار اجازه ادیت میدهد
-    if now - last_edit_time.get(msg_id, 0) < 5:
+    # محدودیت: ویرایش فقط هر 6 ثانیه یکبار
+    if now - last_edit_time.get(msg_id, 0) < 6:
         return
 
     try:
@@ -132,31 +139,28 @@ async def update_progress(current, total, message_obj, start_time, action_text):
     text = (
         f"{action_text}\n"
         f"**{bar} {round(percentage, 1)}%**\n\n"
-        f"💾 حجم: `{humanbytes(current)}` / `{humanbytes(total)}`\n"
-        f"🚀 سرعت: `{humanbytes(speed)}/s`\n"
-        f"⏳ زمان مانده: `{time_formatter(eta)}`"
+        f"💾 **حجم:** `{humanbytes(current)}` / `{humanbytes(total)}`\n"
+        f"🚀 **سرعت:** `{humanbytes(speed)}/s`\n"
+        f"⏳ **زمان مانده:** `{time_formatter(eta)}`"
     )
     
     await safe_edit(message_obj, text)
 
 # ==========================================
-# موتور فشرده‌سازی (بهینه شده)
+# موتور فشرده‌سازی (Disk-Based & Low RAM)
 # ==========================================
 async def compress_engine(input_path, output_path, duration, percentage, message_obj):
-    # تبدیل درصد کاربر به CRF
-    # 20% -> CRF 38 (حجم کم)
-    # 50% -> CRF 28 (متوسط)
-    # 80% -> CRF 23 (کیفیت بالا)
+    # تنظیم کیفیت بر اساس درصد
     percentage = max(10, min(100, int(percentage)))
-    crf = int(45 - (percentage * 0.25))
+    crf = int(48 - (percentage * 0.28))
 
-    # دستور FFmpeg بهینه شده برای مصرف کم CPU و RAM
+    # فلگ‌های بهینه‌سازی شده برای سرعت و حجم کم
     cmd = [
         FFMPEG_BINARY, '-y',
         '-i', input_path,
         '-c:v', 'libx264',
         '-crf', str(crf),
-        '-preset', 'superfast', # سرعت بالا = درگیری کمتر رم
+        '-preset', 'superfast',  # سریعترین حالت برای درگیر نشدن رم
         '-c:a', 'aac',
         '-b:a', '96k',
         '-movflags', '+faststart',
@@ -174,7 +178,7 @@ async def compress_engine(input_path, output_path, duration, percentage, message
         line_txt = line.decode('utf-8', errors='ignore')
         time_match = re.search(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})", line_txt)
         
-        # بلافاصله متغیر خط را پاک میکنیم تا رم اشغال نشود
+        # حذف متغیر از حافظه بلافاصله
         del line
         
         if time_match:
@@ -199,7 +203,6 @@ async def compress_engine(input_path, output_path, duration, percentage, message
 async def queue_worker():
     logger.info("👷 Worker Started...")
     while True:
-        # دریافت تسک
         task = await work_queue.get()
         event = task['event']
         status_msg = task['status_msg']
@@ -210,12 +213,12 @@ async def queue_worker():
         thumb_file = None
         
         try:
-            # 🧹 مرحله 1: تخلیه رم قبل از شروع
-            gc.collect()
+            gc.collect() # خالی کردن رم قبل از شروع
             
             msg = event.message
             ts = int(time.time())
             
+            # تشخیص پسوند
             ext = ".mp4"
             if msg.file and msg.file.name:
                 _, t_ext = os.path.splitext(msg.file.name)
@@ -226,7 +229,7 @@ async def queue_worker():
             out_file = os.path.join(DOWNLOAD_PATH, f"out_{ts}.mp4")
             thumb_file = os.path.join(THUMB_PATH, f"thumb_{ts}.jpg")
 
-            # 📥 مرحله 2: دانلود روی دیسک (نه رم)
+            # 1. دانلود روی دیسک
             dl_start = time.time()
             await user_client.download_media(
                 msg,
@@ -235,40 +238,40 @@ async def queue_worker():
                     update_progress(c, t, status_msg, dl_start, "📥 **در حال دانلود...**")
                 )
             )
-            gc.collect() # تخلیه رم بعد دانلود
+            gc.collect() # خالی کردن رم
 
-            # ⚙️ مرحله 3: فشرده‌سازی
+            # 2. فشرده‌سازی
             duration = msg.file.duration or 1
             success = await compress_engine(in_file, out_file, duration, quality_percent, status_msg)
-            gc.collect() # تخلیه رم بعد فشرده‌سازی
+            gc.collect() 
 
             if success:
                 await status_msg.edit("🖼 **ساخت تامنیل...**")
                 final_thumb = await extract_thumbnail(out_file, thumb_file)
                 
-                # 📤 مرحله 4: آپلود از دیسک
+                # 3. آپلود از دیسک
                 up_start = time.time()
                 old_sz = os.path.getsize(in_file)
                 new_sz = os.path.getsize(out_file)
                 red = ((old_sz - new_sz) / old_sz) * 100
                 
-                cap = (
-                    f"✅ **عملیات موفق بود!**\n\n"
+                caption = (
+                    f"✅ **عملیات با موفقیت انجام شد!**\n\n"
                     f"💎 کیفیت انتخابی: {quality_percent}%\n"
-                    f"📦 حجم اصلی: `{humanbytes(old_sz)}`\n"
-                    f"💾 حجم جدید: `{humanbytes(new_sz)}`\n"
+                    f"📦 حجم اولیه: `{humanbytes(old_sz)}`\n"
+                    f"💾 حجم نهایی: `{humanbytes(new_sz)}`\n"
                     f"📉 کاهش حجم: `{round(red, 1)}%`"
                 )
 
                 await user_client.send_file(
                     event.chat_id,
                     out_file,
-                    caption=cap,
+                    caption=caption,
                     thumb=final_thumb,
-                    supports_streaming=True, # قابلیت پخش آنلاین
+                    supports_streaming=True,
                     reply_to=event.id,
                     progress_callback=lambda c, t: asyncio.create_task(
-                        update_progress(c, t, status_msg, up_start, "📤 **در حال ارسال...**")
+                        update_progress(c, t, status_msg, up_start, "📤 **در حال آپلود...**")
                     )
                 )
                 await status_msg.delete()
@@ -281,20 +284,18 @@ async def queue_worker():
             except: pass
             
         finally:
-            # 🗑 مرحله 5: پاکسازی نهایی و حیاتی
-            # حذف فایل‌ها از دیسک
+            # 🧹 پاکسازی نهایی و حیاتی
             try:
                 if in_file and os.path.exists(in_file): os.remove(in_file)
                 if out_file and os.path.exists(out_file): os.remove(out_file)
                 if thumb_file and os.path.exists(thumb_file): os.remove(thumb_file)
             except: pass
             
-            # حذف تایمر ادیت پیام
             if status_msg.id in last_edit_time: del last_edit_time[status_msg.id]
             
-            # تخلیه نهایی رم
-            del in_file, out_file, thumb_file, msg
-            gc.collect() 
+            # حذف رفرنس‌ها برای آزادسازی رم
+            del in_file, out_file, thumb_file, msg, task
+            gc.collect()
             
             work_queue.task_done()
 
@@ -308,21 +309,21 @@ async def on_message(event):
     chat_id = event.chat_id
     text = event.raw_text
 
-    # 1. دریافت ویدیو
+    # دریافت ویدیو
     if event.message.video or (event.message.document and 'video' in event.message.document.mime_type):
         pending_jobs[chat_id] = event
         await event.reply(
-            "🎥 **ویدیو دریافت شد.**\n\n"
+            "🎥 **ویدیو دریافت شد!**\n\n"
             "لطفاً کیفیت خروجی را تعیین کنید:\n"
             "🔢 عددی بین **1 تا 100** بفرستید.\n\n"
-            "▫️ **20** = حجم خیلی کم (کیفیت پایین)\n"
+            "▫️ **20** = حجم کم (برای اینترنت ضعیف)\n"
             "▫️ **50** = متعادل (پیشنهادی)\n"
-            "▫️ **80** = کیفیت بالا (کاهش حجم کم)\n\n"
+            "▫️ **80** = کیفیت بالا\n\n"
             "👇 عدد را ارسال کنید:"
         )
         return
 
-    # 2. دریافت درصد کیفیت
+    # دریافت عدد کیفیت
     if chat_id in pending_jobs and text.isdigit():
         qual = int(text)
         if not (1 <= qual <= 100):
@@ -337,14 +338,13 @@ async def on_message(event):
         
         msg = await event.reply(wait_text)
         
-        # ارسال به صف پردازش
         await work_queue.put({
             'event': orig_event,
             'status_msg': msg,
             'quality': qual
         })
         return
-        
+
     if text.isdigit() and chat_id not in pending_jobs:
         await event.reply("❌ ابتدا یک ویدیو ارسال کنید.")
 
@@ -391,11 +391,11 @@ async def pass_h(event):
     except Exception as e: await event.reply(f"❌ {e}")
 
 # ==========================================
-# اجرای اصلی
+# سرور وب (برای Render)
 # ==========================================
 async def web_server():
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Bot Running"))
+    app.router.add_get("/", lambda r: web.Response(text="Bot is Running"))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -409,7 +409,7 @@ async def main():
     print("Userbot Starting...")
     await user_client.connect()
     
-    # اجرای Worker در بک‌گراند
+    # اجرای Worker
     asyncio.create_task(queue_worker())
     
     tasks = [bot.run_until_disconnected()]
