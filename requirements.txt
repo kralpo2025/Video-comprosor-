@@ -1,5 +1,6 @@
 telethon
 aiohttp
 imageio-ffmpeg
-cryptg
 hachoir
+cryptg
+
