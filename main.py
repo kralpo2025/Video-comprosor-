@@ -4,42 +4,37 @@ import logging
 import wget
 import tarfile
 import shutil
-import sys
 from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.sessions import MemorySession
 from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from pytgcalls import PyTgCalls
 from pytgcalls.types import AudioVideoPiped
+from pytgcalls.exceptions import GroupCallNotFound
 
 # ==========================================
 # ⚙️ تنظیمات
 # ==========================================
 API_ID = 27868969
 API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
-# توکن ربات
 BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"
-# آیدی عددی خود را وارد کنید
 ADMIN_ID = 7419222963
 
-# لینک پخش زنده
 LIVE_URL = "https://live-hls-video-cf.gn-s1.com/hls/f27197-040428-144028-200928/index.m3u8"
 DOWNLOAD_DIR = "downloads"
 PORT = int(os.environ.get("PORT", 8080))
 
-# لاگینگ
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger("MusicBot")
 
-# متغیرها
 login_state = {}
 active_files = {}
 
 # ==========================================
-# 🛠 نصب FFmpeg (اولین کار)
+# 🛠 نصب‌کننده FFmpeg
 # ==========================================
 def install_ffmpeg():
     os.environ["PATH"] += os.pathsep + os.getcwd()
@@ -69,15 +64,12 @@ install_ffmpeg()
 # ==========================================
 if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
 
-# کلاینت 1: ربات (با MemorySession برای جلوگیری از قفل شدن فایل)
 bot = TelegramClient('bot_session_mem', API_ID, API_HASH)
-
-# کلاینت 2: یوزربات (با فایل سشن برای حفظ لاگین)
 user_client = TelegramClient('user_session', API_ID, API_HASH)
 call_py = PyTgCalls(user_client)
 
 # ==========================================
-# ♻️ توابع کمکی
+# ♻️ توابع کمکی پخش (اصلاح شده)
 # ==========================================
 async def cleanup(chat_id):
     if chat_id in active_files:
@@ -88,48 +80,55 @@ async def cleanup(chat_id):
         del active_files[chat_id]
 
 async def start_player():
-    """استارت موتور پخش در صورت نیاز"""
     try:
         if not call_py.active_calls:
             await call_py.start()
-            logger.info("✅ PyTgCalls Started")
+            logger.info("✅ Engine Started")
     except Exception as e:
-        logger.error(f"Player Start Error: {e}")
+        logger.error(f"Engine Start Error: {e}")
+
+async def stream_audio(chat_id, stream_obj):
+    """تابع هوشمند پخش: اگر در کال باشد عوض می‌کند، نباشد جوین می‌دهد"""
+    try:
+        # تلاش برای تغییر استریم (اگر از قبل در کال باشد)
+        await call_py.change_stream_call(chat_id, stream_obj)
+    except Exception:
+        # اگر در کال نبود یا ارور داد، تلاش برای جوین شدن
+        try:
+            await call_py.join_group_call(chat_id, stream_obj)
+        except Exception as e:
+            # اگر باز هم ارور داد (مثلاً هنوز وصل نشده)، یک بار لفت می‌دهد و دوباره جوین می‌شود
+            try:
+                await call_py.leave_group_call(chat_id)
+                await asyncio.sleep(1)
+                await call_py.join_group_call(chat_id, stream_obj)
+            except Exception as final_e:
+                raise final_e
 
 @call_py.on_stream_end()
 async def on_stream_end(client, update):
     chat_id = update.chat_id
     try:
-        await client.leave_call(chat_id)
+        await client.leave_group_call(chat_id)
         await cleanup(chat_id)
     except: pass
 
 # ==========================================
-# 🤖 ربات مدیریت (بدون فیلتر برای دیباگ)
+# 🤖 ربات مدیریت
 # ==========================================
-
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     sender_id = event.sender_id
-    logger.info(f"Command /start received from {sender_id}")
+    if sender_id != ADMIN_ID:
+        return await event.reply(f"⛔️ شما ادمین نیستید.\n🆔 `{sender_id}`")
     
-    # ⚠️ نکته مهم: اینجا فیلتر ادمین رو برداشتیم تا ربات حتما جواب بده
-    # اگر آیدی شما با ادمین فرق داشته باشه، بهتون میگه
+    status = "🔴 خاموش"
+    try:
+        if user_client.is_connected() and await user_client.is_user_authorized():
+            status = "🟢 آنلاین"
+    except: pass
     
-    msg = f"👋 **سلام! ربات زنده است.**\n\n🆔 آیدی شما: `{sender_id}`\n🔑 آیدی ادمین: `{ADMIN_ID}`"
-    
-    if sender_id == ADMIN_ID:
-        status = "🔴 خاموش"
-        try:
-            if user_client.is_connected() and await user_client.is_user_authorized():
-                status = "🟢 آنلاین"
-        except: pass
-        
-        msg += f"\n\nوضعیت یوزربات: {status}\n\n1️⃣ `/phone +98...`\n2️⃣ `/code 12345`\n3️⃣ `/password ...`"
-    else:
-        msg += "\n\n⛔️ **شما ادمین نیستید!** لطفا آیدی عددی خود را در کد اصلاح کنید."
-
-    await event.reply(msg)
+    await event.reply(f"👋 **پنل موزیک**\nوضعیت: {status}\n\n1️⃣ `/phone +98...`\n2️⃣ `/code ...`")
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def phone_h(event):
@@ -141,7 +140,7 @@ async def phone_h(event):
         s = await user_client.send_code_request(ph)
         login_state['phone'] = ph
         login_state['hash'] = s.phone_code_hash
-        await msg.edit("✅ کد ارسال شد. بزن: `/code 12345`")
+        await msg.edit("✅ کد ارسال شد: `/code 12345`")
     except Exception as e: await msg.edit(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
@@ -150,7 +149,7 @@ async def code_h(event):
     try:
         code = event.pattern_match.group(1).strip()
         await user_client.sign_in(login_state['phone'], code, phone_code_hash=login_state['hash'])
-        await event.reply("✅ **لاگین شد! موتور پخش روشن شد.**")
+        await event.reply("✅ **لاگین شد!**")
         await start_player()
     except SessionPasswordNeededError:
         await event.reply("⚠️ رمز دوم: `/password ...`")
@@ -167,7 +166,7 @@ async def pass_h(event):
     except Exception as e: await event.reply(f"❌ {e}")
 
 # ==========================================
-# 🎵 یوزربات
+# 🎵 یوزربات (اصلاح شده)
 # ==========================================
 @user_client.on(events.NewMessage(pattern='/ply', outgoing=True))
 @user_client.on(events.NewMessage(pattern='/ply', incoming=True, from_users=ADMIN_ID))
@@ -183,10 +182,15 @@ async def play_h(event):
         path = await reply.download_media(file=os.path.join(DOWNLOAD_DIR, f"{chat_id}.mp4"))
         active_files[chat_id] = path
         
-        await msg.edit("🎧 پخش...", buttons=[[Button.inline("❌ توقف", data=b'stop')]])
-        await call_py.play(chat_id, AudioVideoPiped(path))
+        await msg.edit("🎧 در حال اتصال...", buttons=[[Button.inline("❌ توقف", data=b'stop')]])
+        
+        # استفاده از تابع پخش اصلاح شده
+        await stream_audio(chat_id, AudioVideoPiped(path))
+        
+        await msg.edit("▶️ **پخش شروع شد!**", buttons=[[Button.inline("❌ توقف", data=b'stop')]])
+        
     except Exception as e:
-        await msg.edit(f"❌ {e}")
+        await msg.edit(f"❌ خطا: {e}")
         await cleanup(chat_id)
 
 @user_client.on(events.NewMessage(pattern='/live', outgoing=True))
@@ -196,45 +200,49 @@ async def live_h(event):
     msg = await event.reply("📡 اتصال...")
     try:
         await cleanup(event.chat_id)
-        await call_py.play(event.chat_id, AudioVideoPiped(LIVE_URL))
-        await msg.edit("🔴 لایو!", buttons=[[Button.inline("❌ توقف", data=b'stop')]])
+        
+        # استفاده از تابع پخش اصلاح شده
+        await stream_audio(event.chat_id, AudioVideoPiped(LIVE_URL))
+        
+        await msg.edit("🔴 **لایو شروع شد!**", buttons=[[Button.inline("❌ توقف", data=b'stop')]])
     except Exception as e: await msg.edit(f"❌ {e}")
+
+@user_client.on(events.NewMessage(pattern='/stop', outgoing=True))
+@user_client.on(events.NewMessage(pattern='/stop', incoming=True, from_users=ADMIN_ID))
+async def stop_msg_cmd(event):
+    try:
+        await call_py.leave_group_call(event.chat_id)
+        await cleanup(event.chat_id)
+        await event.reply("⏹ توقف.")
+    except: pass
 
 @bot.on(events.CallbackQuery(data=b'stop'))
 async def stop_cb(event):
     if event.sender_id != ADMIN_ID: return await event.answer("⛔️", alert=True)
     try:
-        await call_py.leave_call(event.chat_id)
+        await call_py.leave_group_call(event.chat_id)
         await cleanup(event.chat_id)
         await event.edit("⏹ توقف.")
-    except: pass
+    except Exception as e: await event.answer(f"Error: {e}", alert=True)
 
 # ==========================================
-# 🌐 سرور (جداگانه)
+# 🌐 سرور
 # ==========================================
 async def start_web_server():
-    """اجرای وب‌سرور در بک‌گراند"""
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="Bot OK"))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logger.info("🌍 Web Server Started (Background)")
+    logger.info("🌍 Web Server Started")
 
-# ==========================================
-# 🏁 اجرای اصلی (بدون تداخل)
-# ==========================================
 async def main():
-    # 1. وب سرور رو میفرستیم تو بک گراند که برنامه رو نگه نداره
     asyncio.create_task(start_web_server())
-
-    # 2. استارت ربات
     logger.info("🤖 Starting Bot...")
     await bot.start(bot_token=BOT_TOKEN)
-    logger.info("✅ Bot Started! Waiting for /start")
+    logger.info("✅ Bot Started!")
 
-    # 3. چک کردن یوزربات (بدون بلاک کردن)
     try:
         await user_client.connect()
         if await user_client.is_user_authorized():
@@ -244,7 +252,6 @@ async def main():
             logger.info("⚠️ Userbot needs login")
     except: pass
 
-    # 4. نگه داشتن ربات روشن
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
