@@ -1,59 +1,53 @@
 import os
 import asyncio
 import logging
-import sys
 from aiohttp import web
 from telethon import TelegramClient, events
-from telethon.errors import SessionPasswordNeededError
-from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream, Update
+from telethon.sessions import StringSession
+from pytgcalls import PyTgCalls, idle
+from pytgcalls.types import AudioVideoPiped, MediaStream
 from pytgcalls.types.stream import StreamAudioEnded, StreamVideoEnded
 
 # ==========================================
-# 🔴 تنظیمات (اطلاعات خود را وارد کنید)
+# ⚙️ تنظیمات (اطلاعات خود را دقیق وارد کنید)
 # ==========================================
 API_ID = 27868969
 API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8430316476:AAGupmShC1KAgs3qXDRHGmzg1D7s6Z8wFXU"
 ADMIN_ID = 7419222963
 
-# لینک پخش زنده (لینک m3u8 ایران اینترنشنال یا هر شبکه دیگر)
-# نکته: لینک‌های پخش زنده ممکن است تغییر کنند. اگر کار نکرد، لینک جدید m3u8 پیدا کنید.
+# لینک پخش زنده (شبکه خبر)
 LIVE_STREAM_URL = "https://live-hls-video-cf.gn-s1.com/hls/f27197-040428-144028-200928/index.m3u8"
 
 # مسیرها
-BOT_SESSION = 'bot_session'
-USER_SESSION = 'user_session'
 DOWNLOAD_PATH = "downloads/"
-
-# تنظیمات لاگ
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger("MusicBot")
-
-# ایجاد پوشه دانلود
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# پورت برای Render
+# تنظیمات لاگ
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("MusicBot")
+
+# پورت رندر
 PORT = int(os.environ.get("PORT", 8080))
 
-# دیکشنری برای ذخیره مسیر فایل‌های در حال پخش (برای حذف بعدی)
-active_files = {}
+# دیکشنری برای مدیریت فایل‌های دانلودی
+active_chats = {}
 
 # ==========================================
-# راه‌اندازی کلاینت‌ها
+# 🚀 راه‌اندازی کلاینت‌ها
 # ==========================================
-bot = TelegramClient(BOT_SESSION, API_ID, API_HASH)
-user_client = TelegramClient(USER_SESSION, API_ID, API_HASH)
-call_py = PyTgCalls(user_client)
+# کلاینت ربات (مدیریت)
+bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
+# کلاینت یوزربات (پخش کننده)
+user = TelegramClient('user_session', API_ID, API_HASH)
+call_py = PyTgCalls(user)
 
 # ==========================================
-# توابع کمکی
+# 🗑 توابع کمکی
 # ==========================================
 async def delete_file(path):
-    """حذف فایل از حافظه برای جلوگیری از پر شدن دیسک"""
+    """حذف ایمن فایل از حافظه"""
     if path and os.path.exists(path):
         try:
             os.remove(path)
@@ -61,201 +55,188 @@ async def delete_file(path):
         except Exception as e:
             logger.error(f"خطا در حذف فایل: {e}")
 
+async def cleanup_chat(chat_id):
+    """پاکسازی فایل‌های یک گروه خاص"""
+    if chat_id in active_chats:
+        await delete_file(active_chats[chat_id])
+        del active_chats[chat_id]
+
 # ==========================================
-# هندلرهای PyTgCalls (مدیریت پایان پخش)
+# 🎵 هندلرهای پخش (PyTgCalls)
 # ==========================================
 @call_py.on_stream_end()
-async def on_stream_end(client: PyTgCalls, update: Update):
-    """وقتی پخش فایل تمام شد، آن را پاک کن و از کال خارج شو"""
+async def on_stream_end(client: PyTgCalls, update):
+    """وقتی پخش تمام شد"""
     chat_id = update.chat_id
-    logger.info(f"Stream ended in {chat_id}")
+    logger.info(f"پخش در گروه {chat_id} تمام شد.")
     
     # خروج از کال
     try:
         await client.leave_call(chat_id)
     except:
         pass
-
-    # حذف فایل از حافظه
-    if chat_id in active_files:
-        await delete_file(active_files[chat_id])
-        del active_files[chat_id]
+    
+    # حذف فایل
+    await cleanup_chat(chat_id)
 
 # ==========================================
-# هندلرهای یوزربات (دستورات پخش)
+# 🎮 دستورات یوزربات
 # ==========================================
 
-@user_client.on(events.NewMessage(pattern=r'^/ply', outgoing=True))
-@user_client.on(events.NewMessage(pattern=r'^/ply', incoming=True, from_users=ADMIN_ID))
+@user.on(events.NewMessage(pattern=r'^/ply'))
 async def play_handler(event):
-    """دانلود و پخش فایل ریپلای شده"""
+    """دانلود و پخش فایل"""
+    # فقط ادمین یا خود یوزربات
+    if event.sender_id != ADMIN_ID and not event.out:
+        return
+
     chat_id = event.chat_id
     reply = await event.get_reply_message()
 
     if not reply or not (reply.audio or reply.video):
-        await event.reply("❌ **لطفاً روی یک آهنگ یا ویدئو ریپلای کنید.**")
+        await event.reply("❌ **روی یک آهنگ یا ویدئو ریپلای کن!**")
         return
 
-    msg = await event.reply("📥 **در حال دانلود فایل...**")
+    msg = await event.reply("📥 **در حال دانلود...**")
 
     try:
-        # اگر قبلاً فایلی در حال پخش بود، پاکش کن
-        if chat_id in active_files:
-            await delete_file(active_files[chat_id])
+        # پاکسازی فایل قبلی اگر وجود داشت
+        await cleanup_chat(chat_id)
 
-        # دانلود فایل
+        # دانلود
         file_path = await reply.download_media(file=DOWNLOAD_PATH)
-        active_files[chat_id] = file_path
+        active_chats[chat_id] = file_path
 
-        await msg.edit("🎧 **در حال پخش در ویس‌کال...**")
+        await msg.edit("🎧 **در حال اتصال به ویس‌کال...**")
 
-        # شروع پخش
+        # پخش
         await call_py.play(
             chat_id,
             MediaStream(
                 file_path,
+                audio_parameters=AudioVideoPiped.AudioParameters(bitrate=48000),
+                video_parameters=AudioVideoPiped.VideoParameters(width=1280, height=720, frame_rate=30)
             )
         )
+        await msg.edit("✅ **پخش شروع شد!**\n🗑 فایل بعد از اتمام، خودکار پاک می‌شود.")
+
     except Exception as e:
-        logger.error(f"Play Error: {e}")
-        await msg.edit(f"❌ خطا: `{str(e)}`\n\n*مطمئن شوید که یوزربات ادمین گروه است و ویس‌کال باز است.*")
-        # اگر خطا داد، فایل دانلود شده را پاک کن
-        if chat_id in active_files:
-            await delete_file(active_files[chat_id])
+        logger.error(f"Error: {e}")
+        await msg.edit(f"❌ **خطا:**\n`{str(e)}`")
+        await cleanup_chat(chat_id)
 
-
-@user_client.on(events.NewMessage(pattern=r'^/live', outgoing=True))
-@user_client.on(events.NewMessage(pattern=r'^/live', incoming=True, from_users=ADMIN_ID))
+@user.on(events.NewMessage(pattern=r'^/live'))
 async def live_handler(event):
-    """پخش زنده شبکه خبری"""
+    """پخش زنده"""
+    if event.sender_id != ADMIN_ID and not event.out:
+        return
+
     chat_id = event.chat_id
-    msg = await event.reply("📡 **در حال اتصال به پخش زنده...**")
+    msg = await event.reply("📡 **در حال دریافت سیگنال پخش زنده...**")
 
     try:
-        # پخش لینک استریم
+        await cleanup_chat(chat_id)
+        
         await call_py.play(
             chat_id,
             MediaStream(
                 LIVE_STREAM_URL,
+                audio_parameters=AudioVideoPiped.AudioParameters(bitrate=48000),
+                video_parameters=AudioVideoPiped.VideoParameters(width=1280, height=720, frame_rate=30)
             )
         )
-        await msg.edit("🔴 **پخش زنده شروع شد!**")
-        
-        # در حالت لایو فایلی برای حذف نداریم، اما اگر فایلی قبلا بوده پاکش میکنیم
-        if chat_id in active_files:
-            await delete_file(active_files[chat_id])
-            del active_files[chat_id]
+        await msg.edit("🔴 **پخش زنده شبکه خبر شروع شد!**")
 
     except Exception as e:
-        logger.error(f"Live Error: {e}")
-        await msg.edit(f"❌ خطا در اتصال به لایو: `{str(e)}`")
+        await msg.edit(f"❌ خطا: {e}")
 
-@user_client.on(events.NewMessage(pattern=r'^/stop', outgoing=True))
-@user_client.on(events.NewMessage(pattern=r'^/stop', incoming=True, from_users=ADMIN_ID))
+@user.on(events.NewMessage(pattern=r'^/stop'))
 async def stop_handler(event):
-    """توقف پخش و خروج"""
+    if event.sender_id != ADMIN_ID and not event.out:
+        return
+        
     chat_id = event.chat_id
     try:
         await call_py.leave_call(chat_id)
+        await cleanup_chat(chat_id)
         await event.reply("⏹ **پخش متوقف شد.**")
-        
-        # پاکسازی فایل
-        if chat_id in active_files:
-            await delete_file(active_files[chat_id])
-            del active_files[chat_id]
-            
     except Exception as e:
         await event.reply(f"❌ خطا: {e}")
 
 # ==========================================
-# هندلرهای ربات (سیستم لاگین ادمین) - بدون تغییر
+# 🔐 پنل لاگین (مدیریت با ربات)
 # ==========================================
 login_state = {}
 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
-    if event.sender_id == ADMIN_ID:
-        status = "🔴 قطع"
-        try:
-            if await user_client.is_user_authorized(): status = "🟢 متصل"
-        except: pass
-        await event.reply(f"👑 **پنل مدیریت موزیک**\nوضعیت: {status}\n\n1️⃣ `/phone +98...`\n2️⃣ `/code 12345`\n3️⃣ `/password ...`")
-    else:
-        await event.reply("⛔️ دسترسی محدود به ادمین.")
+    if event.sender_id != ADMIN_ID: return
+    
+    status = "🔴 قطع"
+    if await user.is_user_authorized(): status = "🟢 متصل"
+    
+    await event.reply(
+        f"👋 **پنل مدیریت**\nوضعیت یوزربات: {status}\n\n"
+        "1️⃣ `/phone +98912...`\n"
+        "2️⃣ `/code 12345`\n"
+        "3️⃣ `/password ....`"
+    )
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def phone_h(event):
     if event.sender_id != ADMIN_ID: return
-    ph = event.pattern_match.group(1).strip()
-    msg = await event.reply("⏳ ...")
+    phone = event.pattern_match.group(1).strip()
     try:
-        if not user_client.is_connected(): await user_client.connect()
-        s = await user_client.send_code_request(ph)
-        login_state['phone'] = ph
-        login_state['hash'] = s.phone_code_hash
-        await msg.edit("✅ کد ارسال شد. بزن: `/code 12345`")
-    except Exception as e: await msg.edit(f"❌ {e}")
+        if not user.is_connected(): await user.connect()
+        sent = await user.send_code_request(phone)
+        login_state['phone'] = phone
+        login_state['hash'] = sent.phone_code_hash
+        await event.reply("✅ کد ارسال شد. حالا کد را بفرست: `/code 12345`")
+    except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
 async def code_h(event):
     if event.sender_id != ADMIN_ID: return
     code = event.pattern_match.group(1).strip()
     try:
-        await user_client.sign_in(phone=login_state['phone'], code=code, phone_code_hash=login_state['hash'])
+        await user.sign_in(phone=login_state['phone'], code=code, phone_code_hash=login_state['hash'])
         await event.reply("✅ **یوزربات وصل شد!**")
-    except SessionPasswordNeededError: await event.reply("⚠️ رمز دو مرحله‌ای: `/password ...`")
+    except SessionPasswordNeededError:
+        await event.reply("⚠️ **رمز دوم دارید.** بفرستید: `/password رمز`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
 async def pass_h(event):
     if event.sender_id != ADMIN_ID: return
     try:
-        await user_client.sign_in(password=event.pattern_match.group(1).strip())
-        await event.reply("✅ لاگین موفق.")
+        await user.sign_in(password=event.pattern_match.group(1).strip())
+        await event.reply("✅ ورود موفق.")
     except Exception as e: await event.reply(f"❌ {e}")
 
 # ==========================================
-# وب سرور برای زنده نگه داشتن در Render
+# 🌐 وب سرور و اجرا
 # ==========================================
-async def web_server():
+async def web_handler(request):
+    return web.Response(text="Bot Running")
+
+async def main():
+    # راه‌اندازی وب سرور
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Music Userbot Running..."))
+    app.router.add_get('/', web_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-
-# ==========================================
-# اجرای اصلی
-# ==========================================
-async def main():
-    # استارت سرور وب
-    await web_server()
-    print("WebServer Started.")
-
-    # استارت ربات مدیر
-    await bot.start(bot_token=BOT_TOKEN)
-    print("Bot Started.")
     
-    # استارت کلاینت موزیک
+    # راه‌اندازی کلاینت‌ها
+    await user.start()
     await call_py.start()
-    print("PyTgCalls Started.")
-
-    # استارت یوزربات (برای لاگین)
-    # اگر قبلا لاگین شده باشد وصل می‌شود، اگر نه منتظر دستورات ربات می‌ماند
-    if not await user_client.is_user_authorized():
-        print("Waiting for login via Bot...")
-    else:
-        print("Userbot Authorized.")
-
-    # اجرای مداوم
-    await asyncio.gather(
-        bot.run_until_disconnected(),
-        user_client.run_until_disconnected()  # این خط مهم است تا هندلرهای یوزربات کار کنند
-    )
+    
+    print("✅ همه سیستم‌ها روشن شدند.")
+    
+    # زنده نگه داشتن
+    await idle()
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
