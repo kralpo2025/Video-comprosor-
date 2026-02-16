@@ -1,5 +1,5 @@
-Telethon
-py-tgcalls
+Pyrogram==2.0.106
+TgCrypto
+py-tgcalls==0.9.0
 aiohttp
-hachoir
-async-timeout
+wget
