@@ -1,259 +1,228 @@
 import os
 import asyncio
 import logging
+import wget
+import tarfile
+import shutil
+import time
 from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.errors import SessionPasswordNeeded
 from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream, AudioVideoPiped
+from pytgcalls.types import AudioVideoPiped
 
 # ==========================================
-# ⚙️ تنظیمات (اطلاعات خود را وارد کنید)
+# ⚙️ تنظیمات (اطلاعات رو وارد کن)
 # ==========================================
 API_ID = 27868969
 API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8430316476:AAGupmShC1KAgs3qXDRHGmzg1D7s6Z8wFXU"
 ADMIN_ID = 7419222963
 
-# لینک پخش زنده (شبکه ایران اینترنشنال یا هر لینک m3u8 دیگر)
-# نکته: اگر لینک کار نکرد، باید لینک m3u8 جدید جایگزین کنید
 LIVE_URL = "https://live-hls-video-cf.gn-s1.com/hls/f27197-040428-144028-200928/index.m3u8"
-
-# تنظیمات سیستم
 DOWNLOAD_DIR = "downloads"
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# تنظیمات لاگ
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MusicBot")
 
+# پورت رندر
 PORT = int(os.environ.get("PORT", 8080))
 
-# ==========================================
-# 🚀 راه‌اندازی کلاینت‌ها
-# ==========================================
-# کلاینت ربات (برای مدیریت لاگین)
-bot = Client(
-    "BotSession",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+# متغیرهای حافظه
+login_data = {}
+active_files = {}
 
-# کلاینت یوزربات (برای پخش موزیک)
-user = Client(
-    "UserSession",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    in_memory=True # سشن در حافظه موقت ذخیره می‌شود
-)
+# ==========================================
+# 🛠 نصب‌کننده اتوماتیک FFmpeg (جادوی کار)
+# ==========================================
+def install_ffmpeg():
+    if os.path.exists("ffmpeg"):
+        logger.info("✅ FFmpeg از قبل نصب است.")
+        # اضافه کردن به PATH
+        os.environ["PATH"] += os.pathsep + os.getcwd()
+        return
 
+    logger.info("⏳ در حال دانلود و نصب FFmpeg...")
+    try:
+        # دانلود نسخه استاتیک لینوکس
+        url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+        if os.path.exists("ffmpeg.tar.xz"): os.remove("ffmpeg.tar.xz")
+        wget.download(url, "ffmpeg.tar.xz")
+        print()
+        
+        # استخراج
+        with tarfile.open("ffmpeg.tar.xz") as f:
+            f.extractall(".")
+        
+        # پیدا کردن فایل و انتقال به ریشه
+        for root, dirs, files in os.walk("."):
+            if "ffmpeg" in files:
+                source = os.path.join(root, "ffmpeg")
+                shutil.move(source, "./ffmpeg")
+                os.chmod("./ffmpeg", 0o755) # دسترسی اجرا
+                break
+        
+        # پاکسازی
+        if os.path.exists("ffmpeg.tar.xz"): os.remove("ffmpeg.tar.xz")
+        
+        # اضافه کردن به PATH
+        os.environ["PATH"] += os.pathsep + os.getcwd()
+        logger.info("✅ نصب FFmpeg تمام شد!")
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در نصب FFmpeg: {e}")
+
+# اجرای نصب همین ابتدای کار
+install_ffmpeg()
+
+# ==========================================
+# 🚀 کلاینت‌ها
+# ==========================================
+if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
+
+# ربات برای مدیریت
+bot = Client("BotSession", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# یوزربات برای پخش (In Memory)
+user = Client("UserSession", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+
+# کلاینت تماس
 call_py = PyTgCalls(user)
 
-# دیکشنری برای ذخیره مسیر فایل‌های در حال پخش
-active_chats_files = {}
+# ==========================================
+# 🗑 توابع کمکی
+# ==========================================
+async def cleanup(chat_id):
+    if chat_id in active_files:
+        path = active_files[chat_id]
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                logger.info(f"🗑 فایل حذف شد: {path}")
+            except: pass
+        del active_files[chat_id]
 
-# ==========================================
-# 🛠 توابع کمکی (مدیریت فایل)
-# ==========================================
-async def remove_file(path):
-    """حذف ایمن فایل از حافظه"""
-    if path and os.path.exists(path):
-        try:
-            os.remove(path)
-            logger.info(f"🗑 File deleted: {path}")
-        except Exception as e:
-            logger.error(f"Error deleting file: {e}")
-
-async def cleanup_chat(chat_id):
-    """پاکسازی فایل‌های مربوط به یک چت"""
-    if chat_id in active_chats_files:
-        await remove_file(active_chats_files[chat_id])
-        del active_chats_files[chat_id]
-
-# ==========================================
-# 🎵 هندلرهای پخش (PyTgCalls)
-# ==========================================
 @call_py.on_stream_end()
-async def on_stream_end(client: PyTgCalls, update):
-    """وقتی پخش تمام شد (چه دستی چه خودکار)"""
+async def on_stream_end(client, update):
     chat_id = update.chat_id
-    logger.info(f"Stream ended in {chat_id}")
-    
-    # خروج از کال
     try:
         await client.leave_call(chat_id)
-    except:
-        pass
-    
-    # حذف فایل از سرور
-    await cleanup_chat(chat_id)
+        await cleanup(chat_id)
+    except: pass
 
 # ==========================================
 # 🎮 دستورات یوزربات
 # ==========================================
 
 @user.on_message(filters.command("ply") & filters.user(ADMIN_ID))
-async def play_command(client, message):
-    chat_id = message.chat.id
-    replied = message.reply_to_message
+async def play_handler(c, m):
+    chat_id = m.chat.id
+    replied = m.reply_to_message
 
-    # بررسی اینکه آیا روی فایل درستی ریپلای شده؟
-    if not replied or not (replied.audio or replied.video or replied.document):
-        return await message.reply("❌ **لطفاً روی یک آهنگ یا ویدئو ریپلای کنید.**")
+    if not replied or not (replied.audio or replied.video):
+        return await m.reply("❌ **روی فایل ریپلای کن!**")
 
-    status_msg = await message.reply("📥 **در حال دانلود فایل...**")
+    msg = await m.reply("📥 **دانلود...**")
 
     try:
-        # اگر قبلاً فایلی بوده، پاکش کن
-        await cleanup_chat(chat_id)
-
+        await cleanup(chat_id)
+        
         # دانلود فایل
-        file_path = await replied.download(os.path.join(DOWNLOAD_DIR, f"{chat_id}_{message.id}.mp4"))
-        active_chats_files[chat_id] = file_path
+        path = await replied.download(f"{DOWNLOAD_DIR}/{chat_id}_{int(time.time())}.mp4")
+        active_files[chat_id] = path
 
-        await status_msg.edit("🎧 **در حال اتصال به ویس‌کال...**")
-
-        # پخش فایل
+        await msg.edit("🎧 **اتصال...**")
+        
         await call_py.play(
             chat_id,
-            MediaStream(
-                file_path,
-                audio_parameters=AudioVideoPiped.AudioParameters(bitrate=48000),
-                video_parameters=AudioVideoPiped.VideoParameters(width=1280, height=720, frame_rate=30),
-            )
+            AudioVideoPiped(path)
         )
-        await status_msg.edit("✅ **پخش شروع شد!**\n🗑 فایل پس از پایان، خودکار حذف می‌شود.")
-
+        await msg.edit("✅ **پخش شد!**")
     except Exception as e:
-        logger.error(f"Play Error: {e}")
-        await status_msg.edit(f"❌ **خطا:**\n`{str(e)}`")
-        await cleanup_chat(chat_id)
-
+        await msg.edit(f"❌ خطا: {e}")
+        await cleanup(chat_id)
 
 @user.on_message(filters.command("live") & filters.user(ADMIN_ID))
-async def live_command(client, message):
-    chat_id = message.chat.id
-    status_msg = await message.reply("📡 **در حال اتصال به پخش زنده...**")
-
+async def live_handler(c, m):
+    chat_id = m.chat.id
+    msg = await m.reply("📡 **اتصال به لایو...**")
     try:
-        await cleanup_chat(chat_id)
-
+        await cleanup(chat_id)
         await call_py.play(
             chat_id,
-            MediaStream(
-                LIVE_URL,
-                audio_parameters=AudioVideoPiped.AudioParameters(bitrate=48000),
-                video_parameters=AudioVideoPiped.VideoParameters(width=1280, height=720, frame_rate=30),
-            )
+            AudioVideoPiped(LIVE_URL)
         )
-        await status_msg.edit("🔴 **پخش زنده شروع شد!**")
-
+        await msg.edit("🔴 **لایو شروع شد!**")
     except Exception as e:
-        await status_msg.edit(f"❌ خطا: {e}")
-
+        await msg.edit(f"❌ خطا: {e}")
 
 @user.on_message(filters.command("stop") & filters.user(ADMIN_ID))
-async def stop_command(client, message):
-    chat_id = message.chat.id
+async def stop_handler(c, m):
     try:
-        await call_py.leave_call(chat_id)
-        await cleanup_chat(chat_id)
-        await message.reply("⏹ **پخش متوقف شد.**")
-    except Exception as e:
-        await message.reply(f"❌ خطا: {e}")
+        await call_py.leave_call(m.chat.id)
+        await cleanup(m.chat.id)
+        await m.reply("⏹ **قطع شد.**")
+    except: pass
 
 # ==========================================
-# 🔐 پنل مدیریت (لاگین)
+# 🔐 لاگین (مدیریت)
 # ==========================================
-# متغیر موقت برای لاگین
-login_cache = {}
-
 @bot.on_message(filters.command("start") & filters.user(ADMIN_ID))
-async def start_bot(client, message):
-    status = "🟢 متصل" if user.is_connected else "🔴 قطع"
-    await message.reply(
-        f"👋 **پنل مدیریت موزیک**\nوضعیت یوزربات: {status}\n\n"
-        "1️⃣ `/phone +98912...`\n"
-        "2️⃣ `/code 12345`\n"
-        "3️⃣ `/password رمز`"
-    )
+async def start_cmd(c, m):
+    st = "وصل" if user.is_connected else "قطع"
+    await m.reply(f"وضعیت: {st}\n1. `/phone +98...`\n2. `/code ...`\n3. `/password ...`")
 
 @bot.on_message(filters.command("phone") & filters.user(ADMIN_ID))
-async def login_phone(client, message):
+async def ph_cmd(c, m):
     try:
-        if len(message.command) < 2: return await message.reply("شماره را وارد کنید.")
-        phone = message.command[1]
-        
+        p = m.text.split()[1]
         if not user.is_connected: await user.connect()
-        
-        sent_code = await user.send_code(phone)
-        login_cache['phone'] = phone
-        login_cache['hash'] = sent_code.phone_code_hash
-        
-        await message.reply("✅ کد ارسال شد. حالا بزنید: `/code 12345`")
-    except Exception as e:
-        await message.reply(f"❌ خطا: {e}")
+        s = await user.send_code(p)
+        login_data.update({'p': p, 'h': s.phone_code_hash})
+        await m.reply("کد رو بزن.")
+    except Exception as e: await m.reply(f"❌ {e}")
 
 @bot.on_message(filters.command("code") & filters.user(ADMIN_ID))
-async def login_code(client, message):
+async def co_cmd(c, m):
     try:
-        if len(message.command) < 2: return await message.reply("کد را وارد کنید.")
-        code = message.command[1]
-        
-        await user.sign_in(
-            login_cache['phone'],
-            login_cache['hash'],
-            code
-        )
-        await message.reply("✅ **یوزربات با موفقیت وصل شد!**")
+        await user.sign_in(login_data['p'], login_data['h'], m.text.split()[1])
+        await m.reply("✅ وصل شد.")
     except SessionPasswordNeeded:
-        await message.reply("⚠️ **تایید دو مرحله‌ای دارید.**\nبزنید: `/password رمز`")
-    except Exception as e:
-        await message.reply(f"❌ خطا: {e}")
+        await m.reply("رمز دوم: `/password ...`")
+    except Exception as e: await m.reply(f"❌ {e}")
 
 @bot.on_message(filters.command("password") & filters.user(ADMIN_ID))
-async def login_password(client, message):
+async def pa_cmd(c, m):
     try:
-        if len(message.command) < 2: return await message.reply("رمز را وارد کنید.")
-        pwd = message.command[1]
-        
-        await user.check_password(password=pwd)
-        await message.reply("✅ **ورود موفقیت آمیز بود!**")
-    except Exception as e:
-        await message.reply(f"❌ خطا: {e}")
+        await user.check_password(m.text.split()[1])
+        await m.reply("✅ وصل شد.")
+    except Exception as e: await m.reply(f"❌ {e}")
 
 # ==========================================
-# 🌐 وب‌سرور (زنده نگه داشتن در Render)
+# 🌐 اجرا (بدون داکر)
 # ==========================================
-async def web_handler(request):
-    return web.Response(text="Music Bot is Running correctly.")
+async def web_handler(r): return web.Response(text="Running")
 
 async def main():
-    # 1. اجرای وب سرور
+    # وب سرور
     app = web.Application()
     app.router.add_get("/", web_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    
-    # 2. اجرای کلاینت‌ها
+
+    # ربات‌ها
     await bot.start()
     await call_py.start()
     
-    # 3. اتصال یوزربات اگر سشن داشت
+    # ریکانکت
     try:
-        if not user.is_connected:
-            await user.connect()
-    except Exception:
-        pass
-        
-    print("✅ Bot is fully up and running!")
+        if not user.is_connected: await user.connect()
+    except: pass
+    
+    print("✅ ربات روشن شد")
     await idle()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    asyncio.run(main())
