@@ -5,3 +5,4 @@ aiohttp
 wget
 yt-dlp
 ffmpeg-python
+psutil
