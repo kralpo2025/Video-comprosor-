@@ -3,10 +3,8 @@ import asyncio
 import logging
 from aiohttp import web
 from telethon import TelegramClient, events
-from telethon.sessions import StringSession
 from pytgcalls import PyTgCalls, idle
-from pytgcalls.types import AudioVideoPiped, MediaStream
-from pytgcalls.types.stream import StreamAudioEnded, StreamVideoEnded
+from pytgcalls.types import MediaStream, AudioVideoPiped
 
 # ==========================================
 # ⚙️ تنظیمات (اطلاعات خود را دقیق وارد کنید)
@@ -173,7 +171,9 @@ async def start_handler(event):
     if event.sender_id != ADMIN_ID: return
     
     status = "🔴 قطع"
-    if await user.is_user_authorized(): status = "🟢 متصل"
+    try:
+        if await user.is_user_authorized(): status = "🟢 متصل"
+    except: pass
     
     await event.reply(
         f"👋 **پنل مدیریت**\nوضعیت یوزربات: {status}\n\n"
@@ -201,8 +201,6 @@ async def code_h(event):
     try:
         await user.sign_in(phone=login_state['phone'], code=code, phone_code_hash=login_state['hash'])
         await event.reply("✅ **یوزربات وصل شد!**")
-    except SessionPasswordNeededError:
-        await event.reply("⚠️ **رمز دوم دارید.** بفرستید: `/password رمز`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
