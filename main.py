@@ -16,7 +16,7 @@ from pytgcalls.types import AudioVideoPiped
 # ==========================================
 API_ID = 27868969
 API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
-BOT_TOKEN = "8069467636:AAE6KyIqO1WSC1cdcvW6E9QPtvq9lRPSvI8"
+BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"
 # آیدی عددی خودت رو اینجا بذار. اگر اشتباه باشه ربات بهت میگه.
 ADMIN_ID = 7419222963
 
