@@ -12,7 +12,7 @@ from pytgcalls import PyTgCalls
 from pytgcalls.types import AudioVideoPiped
 
 # ==========================================
-# ⚙️ تنظیمات (اطلاعات رو وارد کن)
+# ⚙️ تنظیمات
 # ==========================================
 API_ID = 27868969
 API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
@@ -22,27 +22,25 @@ ADMIN_ID = 7419222963
 LIVE_URL = "https://live-hls-video-cf.gn-s1.com/hls/f27197-040428-144028-200928/index.m3u8"
 DOWNLOAD_DIR = "downloads"
 
-# تنظیمات لاگ
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MusicBot")
-
-# پورت رندر
 PORT = int(os.environ.get("PORT", 8080))
 
-# متغیرهای حافظه
 login_data = {}
 active_files = {}
 
 # ==========================================
-# 🛠 نصب‌کننده اتوماتیک FFmpeg
+# 🛠 نصب FFmpeg
 # ==========================================
 def install_ffmpeg():
+    # اضافه کردن مسیر جاری به PATH
+    os.environ["PATH"] += os.pathsep + os.getcwd()
+    
     if os.path.exists("ffmpeg"):
-        logger.info("✅ FFmpeg از قبل نصب است.")
-        os.environ["PATH"] += os.pathsep + os.getcwd()
+        logger.info("✅ FFmpeg موجود است.")
         return
 
-    logger.info("⏳ در حال دانلود و نصب FFmpeg...")
+    logger.info("⏳ در حال دانلود FFmpeg...")
     try:
         url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
         if os.path.exists("ffmpeg.tar.xz"): os.remove("ffmpeg.tar.xz")
@@ -60,12 +58,9 @@ def install_ffmpeg():
                 break
         
         if os.path.exists("ffmpeg.tar.xz"): os.remove("ffmpeg.tar.xz")
-        
-        os.environ["PATH"] += os.pathsep + os.getcwd()
-        logger.info("✅ نصب FFmpeg تمام شد!")
-        
+        logger.info("✅ نصب تمام شد.")
     except Exception as e:
-        logger.error(f"❌ خطا در نصب FFmpeg: {e}")
+        logger.error(f"❌ خطا در نصب: {e}")
 
 install_ffmpeg()
 
@@ -79,14 +74,13 @@ user = Client("UserSession", api_id=API_ID, api_hash=API_HASH, in_memory=True)
 call_py = PyTgCalls(user)
 
 # ==========================================
-# 🗑 توابع
+# 🗑 توابع کمکی
 # ==========================================
 async def cleanup(chat_id):
     if chat_id in active_files:
         path = active_files[chat_id]
         if path and os.path.exists(path):
-            try:
-                os.remove(path)
+            try: os.remove(path)
             except: pass
         del active_files[chat_id]
 
@@ -99,31 +93,24 @@ async def on_stream_end(client, update):
     except: pass
 
 # ==========================================
-# 🎮 دستورات
+# 🎮 دستورات یوزربات
 # ==========================================
-
 @user.on_message(filters.command("ply") & filters.user(ADMIN_ID))
 async def play_handler(c, m):
     chat_id = m.chat.id
     replied = m.reply_to_message
-
     if not replied or not (replied.audio or replied.video):
-        return await m.reply("❌ **روی فایل ریپلای کن!**")
+        return await m.reply("❌ ریپلای کن!")
 
-    msg = await m.reply("📥 **دانلود...**")
-
+    msg = await m.reply("📥 دانلود...")
     try:
         await cleanup(chat_id)
         path = await replied.download(f"{DOWNLOAD_DIR}/{chat_id}_{int(time.time())}.mp4")
         active_files[chat_id] = path
 
-        await msg.edit("🎧 **اتصال...**")
-        
-        await call_py.play(
-            chat_id,
-            AudioVideoPiped(path)
-        )
-        await msg.edit("✅ **پخش شد!**")
+        await msg.edit("🎧 پخش...")
+        await call_py.play(chat_id, AudioVideoPiped(path))
+        await msg.edit("✅ پخش شد!")
     except Exception as e:
         await msg.edit(f"❌ خطا: {e}")
         await cleanup(chat_id)
@@ -131,14 +118,11 @@ async def play_handler(c, m):
 @user.on_message(filters.command("live") & filters.user(ADMIN_ID))
 async def live_handler(c, m):
     chat_id = m.chat.id
-    msg = await m.reply("📡 **اتصال به لایو...**")
+    msg = await m.reply("📡 اتصال...")
     try:
         await cleanup(chat_id)
-        await call_py.play(
-            chat_id,
-            AudioVideoPiped(LIVE_URL)
-        )
-        await msg.edit("🔴 **لایو شروع شد!**")
+        await call_py.play(chat_id, AudioVideoPiped(LIVE_URL))
+        await msg.edit("🔴 لایو!")
     except Exception as e:
         await msg.edit(f"❌ خطا: {e}")
 
@@ -147,63 +131,87 @@ async def stop_handler(c, m):
     try:
         await call_py.leave_call(m.chat.id)
         await cleanup(m.chat.id)
-        await m.reply("⏹ **قطع شد.**")
+        await m.reply("⏹ قطع شد.")
     except: pass
 
 # ==========================================
-# 🔐 پنل مدیریت
+# 🔐 پنل مدیریت (لاگین)
 # ==========================================
 @bot.on_message(filters.command("start") & filters.user(ADMIN_ID))
 async def start_cmd(c, m):
-    st = "وصل" if user.is_connected else "قطع"
-    await m.reply(f"وضعیت: {st}\n`/phone +98...`\n`/code ...`\n`/password ...`")
+    st = "🟢 متصل" if user.is_connected else "🔴 قطع (نیاز به لاگین)"
+    await m.reply(f"وضعیت: {st}\n1. `/phone +98...`\n2. `/code ...`")
 
 @bot.on_message(filters.command("phone") & filters.user(ADMIN_ID))
 async def ph_cmd(c, m):
     try:
         p = m.text.split()[1]
+        # اتصال اولیه بدون استارت کامل (فقط کانکت)
         if not user.is_connected: await user.connect()
+        
         s = await user.send_code(p)
         login_data.update({'p': p, 'h': s.phone_code_hash})
-        await m.reply("کد رو بزن.")
+        await m.reply("✅ کد را بفرست: `/code 12345`")
     except Exception as e: await m.reply(f"❌ {e}")
 
 @bot.on_message(filters.command("code") & filters.user(ADMIN_ID))
 async def co_cmd(c, m):
     try:
-        await user.sign_in(login_data['p'], login_data['h'], m.text.split()[1])
-        await m.reply("✅ وصل شد.")
+        code = m.text.split()[1]
+        await user.sign_in(login_data['p'], login_data['h'], code)
+        await m.reply("✅ **لاگین موفق! سرویس پخش استارت شد.**")
+        
+        # 🔥 نکته مهم: اینجا استارت میزنیم تا کرش نکنه
+        if not call_py.active_calls:
+            await call_py.start()
+            
     except SessionPasswordNeeded:
-        await m.reply("رمز دوم: `/password ...`")
+        await m.reply("⚠️ رمز دوم: `/password ...`")
     except Exception as e: await m.reply(f"❌ {e}")
 
 @bot.on_message(filters.command("password") & filters.user(ADMIN_ID))
 async def pa_cmd(c, m):
     try:
-        await user.check_password(m.text.split()[1])
-        await m.reply("✅ وصل شد.")
+        pwd = m.text.split()[1]
+        await user.check_password(password=pwd)
+        await m.reply("✅ **لاگین موفق! سرویس پخش استارت شد.**")
+        
+        # 🔥 استارت سرویس پخش بعد از موفقیت
+        if not call_py.active_calls:
+            await call_py.start()
+            
     except Exception as e: await m.reply(f"❌ {e}")
 
 # ==========================================
 # 🌐 اجرا
 # ==========================================
-async def web_handler(r): return web.Response(text="Bot OK")
+async def web_handler(r): return web.Response(text="Bot Running")
 
 async def main():
+    # 1. وب سرور
     app = web.Application()
     app.router.add_get("/", web_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
 
+    # 2. استارت ربات مدیریت
+    print("🤖 استارت ربات...")
     await bot.start()
-    await call_py.start()
-    
+
+    # 3. لاجیک هوشمند استارت یوزربات
+    print("👤 بررسی وضعیت یوزربات...")
     try:
-        if not user.is_connected: await user.connect()
-    except: pass
-    
-    print("✅ ربات روشن شد")
+        await user.connect()
+        if await user.get_me():
+            print("✅ یوزربات از قبل لاگین است. استارت سرویس تماس...")
+            await call_py.start()
+        else:
+            print("⚠️ یوزربات لاگین نیست. منتظر دستور /phone در ربات...")
+            # اینجا call_py.start() را اجرا نمیکنیم تا کرش نکند
+    except Exception as e:
+        print(f"وضعیت لاگین: {e}")
+
     await idle()
 
 if __name__ == "__main__":
