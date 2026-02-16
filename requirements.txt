@@ -1,7 +1,5 @@
-telethon
-py-tgcalls
-aiohttp
-hachoir
+Telethon==1.36.0
+py-tgcalls==1.1.0
+aiohttp==3.9.5
 async-timeout
-imageio-ffmpeg
-
+hachoir
