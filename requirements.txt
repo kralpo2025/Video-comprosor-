@@ -1,5 +1,5 @@
 Pyrogram==2.0.106
-TgCrypto
-py-tgcalls==0.9.0
-aiohttp
-wget
+TgCrypto==1.2.5
+py-tgcalls==1.1.0
+aiohttp==3.9.5
+async-timeout
