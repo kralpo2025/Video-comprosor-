@@ -1,5 +1,7 @@
 telethon
+py-tgcalls
 aiohttp
-imageio-ffmpeg
 hachoir
-cryptg
+async-timeout
+imageio-ffmpeg
+
