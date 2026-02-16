@@ -34,46 +34,39 @@ login_data = {}
 active_files = {}
 
 # ==========================================
-# 🛠 نصب‌کننده اتوماتیک FFmpeg (جادوی کار)
+# 🛠 نصب‌کننده اتوماتیک FFmpeg
 # ==========================================
 def install_ffmpeg():
     if os.path.exists("ffmpeg"):
         logger.info("✅ FFmpeg از قبل نصب است.")
-        # اضافه کردن به PATH
         os.environ["PATH"] += os.pathsep + os.getcwd()
         return
 
     logger.info("⏳ در حال دانلود و نصب FFmpeg...")
     try:
-        # دانلود نسخه استاتیک لینوکس
         url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
         if os.path.exists("ffmpeg.tar.xz"): os.remove("ffmpeg.tar.xz")
         wget.download(url, "ffmpeg.tar.xz")
         print()
         
-        # استخراج
         with tarfile.open("ffmpeg.tar.xz") as f:
             f.extractall(".")
         
-        # پیدا کردن فایل و انتقال به ریشه
         for root, dirs, files in os.walk("."):
             if "ffmpeg" in files:
                 source = os.path.join(root, "ffmpeg")
                 shutil.move(source, "./ffmpeg")
-                os.chmod("./ffmpeg", 0o755) # دسترسی اجرا
+                os.chmod("./ffmpeg", 0o755)
                 break
         
-        # پاکسازی
         if os.path.exists("ffmpeg.tar.xz"): os.remove("ffmpeg.tar.xz")
         
-        # اضافه کردن به PATH
         os.environ["PATH"] += os.pathsep + os.getcwd()
         logger.info("✅ نصب FFmpeg تمام شد!")
         
     except Exception as e:
         logger.error(f"❌ خطا در نصب FFmpeg: {e}")
 
-# اجرای نصب همین ابتدای کار
 install_ffmpeg()
 
 # ==========================================
@@ -81,17 +74,12 @@ install_ffmpeg()
 # ==========================================
 if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
 
-# ربات برای مدیریت
 bot = Client("BotSession", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# یوزربات برای پخش (In Memory)
 user = Client("UserSession", api_id=API_ID, api_hash=API_HASH, in_memory=True)
-
-# کلاینت تماس
 call_py = PyTgCalls(user)
 
 # ==========================================
-# 🗑 توابع کمکی
+# 🗑 توابع
 # ==========================================
 async def cleanup(chat_id):
     if chat_id in active_files:
@@ -99,7 +87,6 @@ async def cleanup(chat_id):
         if path and os.path.exists(path):
             try:
                 os.remove(path)
-                logger.info(f"🗑 فایل حذف شد: {path}")
             except: pass
         del active_files[chat_id]
 
@@ -112,7 +99,7 @@ async def on_stream_end(client, update):
     except: pass
 
 # ==========================================
-# 🎮 دستورات یوزربات
+# 🎮 دستورات
 # ==========================================
 
 @user.on_message(filters.command("ply") & filters.user(ADMIN_ID))
@@ -127,8 +114,6 @@ async def play_handler(c, m):
 
     try:
         await cleanup(chat_id)
-        
-        # دانلود فایل
         path = await replied.download(f"{DOWNLOAD_DIR}/{chat_id}_{int(time.time())}.mp4")
         active_files[chat_id] = path
 
@@ -166,12 +151,12 @@ async def stop_handler(c, m):
     except: pass
 
 # ==========================================
-# 🔐 لاگین (مدیریت)
+# 🔐 پنل مدیریت
 # ==========================================
 @bot.on_message(filters.command("start") & filters.user(ADMIN_ID))
 async def start_cmd(c, m):
     st = "وصل" if user.is_connected else "قطع"
-    await m.reply(f"وضعیت: {st}\n1. `/phone +98...`\n2. `/code ...`\n3. `/password ...`")
+    await m.reply(f"وضعیت: {st}\n`/phone +98...`\n`/code ...`\n`/password ...`")
 
 @bot.on_message(filters.command("phone") & filters.user(ADMIN_ID))
 async def ph_cmd(c, m):
@@ -200,23 +185,20 @@ async def pa_cmd(c, m):
     except Exception as e: await m.reply(f"❌ {e}")
 
 # ==========================================
-# 🌐 اجرا (بدون داکر)
+# 🌐 اجرا
 # ==========================================
-async def web_handler(r): return web.Response(text="Running")
+async def web_handler(r): return web.Response(text="Bot OK")
 
 async def main():
-    # وب سرور
     app = web.Application()
     app.router.add_get("/", web_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
 
-    # ربات‌ها
     await bot.start()
     await call_py.start()
     
-    # ریکانکت
     try:
         if not user.is_connected: await user.connect()
     except: pass
