@@ -11,7 +11,6 @@ from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import MemorySession
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl.types import Channel, Chat
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
 import yt_dlp
@@ -24,7 +23,7 @@ API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"
 ADMIN_ID = 7419222963
 
-# لینک مستقیم ایران اینترنشنال
+# لینک ثابت جدید ایران اینترنشنال
 IRAN_INTL_URL = "https://dev-live.livetvstream.co.uk/LS-63503-4/index.m3u8"
 
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
@@ -94,7 +93,7 @@ call_py = PyTgCalls(user_client)
 # ==========================================
 
 def get_sys_info():
-    """دریافت وضعیت رم و دیسک"""
+    """دریافت وضعیت رم و دیسک بدون خطا"""
     try:
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
@@ -138,7 +137,11 @@ async def start_stream_engine(chat_id, source, start_time=0):
         raise e
 
 def is_authorized(event):
-    """بررسی اینکه پیام از طرف ادمین است یا خود یوزربات"""
+    """
+    بررسی اینکه پیام معتبر است:
+    1. از طرف ادمین باشد (ADMIN_ID)
+    2. یا از طرف خود یوزربات باشد (event.out - این برای کانال ضروری است)
+    """
     return event.sender_id == ADMIN_ID or event.out
 
 # ==========================================
@@ -182,22 +185,22 @@ async def pa(event):
 # ==========================================
 # ⚡️ پردازشگر مرکزی پیام‌ها (Userbot)
 # ==========================================
-# به جای استفاده از پترن‌های پیچیده، همه پیام‌ها را می‌گیریم و چک می‌کنیم
 @user_client.on(events.NewMessage)
 async def message_handler(event):
     # 1. فقط پیام‌های متنی را پردازش کن
-    if not event.text: return
+    if not event.raw_text: return
     
     # 2. فقط اگر ادمین یا خود یوزربات فرستاده باشد
     if not is_authorized(event): return
 
+    # تبدیل متن به حروف کوچک و حذف فاصله‌های اضافی
     text = event.raw_text.lower().strip()
     chat_id = str(event.chat_id)
 
     # --- دستورات مدیریتی (همیشه فعال) ---
     
     # دستور: /add
-    if text == '/add' or text.startswith('/add '):
+    if text.startswith('/add'):
         try:
             target = text.replace('/add', '').strip()
             if not target: 
@@ -216,7 +219,7 @@ async def message_handler(event):
         return
 
     # دستور: /del
-    if text == '/del' or text.startswith('/del '):
+    if text.startswith('/del'):
         try:
             target = text.replace('/del', '').strip()
             cid = target if target else chat_id
@@ -240,8 +243,9 @@ async def message_handler(event):
     # --- از اینجا به بعد فقط برای چت‌های مجاز است ---
     if chat_id not in WHITELIST: return
 
-    # دستور: پخش / ply
-    if text in ['/ply', 'پخش', 'ply']:
+    # دستور: پخش / ply / play
+    # چک میکنیم آیا یکی از کلمات کلیدی در متن هست
+    if text == '/ply' or text == 'پخش' or text == '/play':
         reply = await event.get_reply_message()
         if not reply or not (reply.audio or reply.video):
             return await event.reply("❌ روی فایل ریپلای کن.")
@@ -268,7 +272,7 @@ async def message_handler(event):
 
     # دستور: لایو / تی وی / live
     if text.startswith('/live') or text.startswith('تی وی') or text.startswith('live'):
-        # استخراج لینک اگر وجود داشته باشد
+        # استخراج لینک اگر وجود داشته باشد (با فاصله جدا شده)
         parts = text.split()
         link = parts[1] if len(parts) > 1 else IRAN_INTL_URL
         title = "لینک کاربر" if len(parts) > 1 else "ایران اینترنشنال"
@@ -301,7 +305,7 @@ async def message_handler(event):
         return
 
     # دستور: قطع / stop
-    if text in ['/stop', 'قطع', 'stop']:
+    if text == '/stop' or text == 'قطع' or text == 'stop':
         try:
             await call_py.leave_group_call(event.chat_id)
             await cleanup(event.chat_id)
