@@ -1,9 +1,9 @@
-Telethon==1.24.0
+Telethon==1.32.1
 py-tgcalls==2.2.10
-yt-dlp>=2023.7.6
-aiohttp==3.8.5
-psutil==5.9.5
+yt-dlp>=2024.3.10
+aiohttp==3.9.5
+psutil==5.9.8
 wget==3.2
 cryptg==0.4.0
-hachoir==3.1.2
+hachoir==3.3.0
 async-timeout==4.0.3
