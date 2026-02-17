@@ -12,11 +12,15 @@ from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import MemorySession
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl.types import Channel
+from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeVideo
 
-# کتابخانه‌های نسخه 1.2.9 (پایدار)
+# کتابخانه‌های نسخه 1.2.9
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
+
+# کتابخانه برای دریافت زمان فایل
+from hachoir.metadata import extractMetadata
+from hachoir.parser import createParser
 
 import yt_dlp
 
@@ -37,13 +41,14 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger("UltraStreamer")
+logger = logging.getLogger("UltraLiteBot")
 
 login_state = {}
 active_calls_data = {}
+progress_tasks = {}
 
 # ==========================================
-# 🧹 مدیریت حافظه (Memory)
+# 🧹 مدیریت حافظه
 # ==========================================
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
@@ -53,8 +58,13 @@ else:
         except: pass
 
 async def force_cleanup(chat_id):
-    """پاکسازی فایل و رم"""
+    """پاکسازی کامل"""
     try:
+        # متوقف کردن تسک نمایش زمان
+        if chat_id in progress_tasks:
+            progress_tasks[chat_id].cancel()
+            del progress_tasks[chat_id]
+
         if chat_id in active_calls_data:
             data = active_calls_data[chat_id]
             path = data.get("path")
@@ -63,12 +73,11 @@ async def force_cleanup(chat_id):
                 except: pass
             del active_calls_data[chat_id]
         
-        # پاکسازی رم
         gc.collect()
     except: pass
 
 # ==========================================
-# 🔐 لیست مجاز (Database)
+# 🔐 لیست مجاز
 # ==========================================
 def load_allowed_chats():
     if not os.path.exists(AUTH_FILE): return [ADMIN_ID]
@@ -115,16 +124,32 @@ user_client = TelegramClient('user_session', API_ID, API_HASH)
 call_py = PyTgCalls(user_client)
 
 # ==========================================
-# 📊 توابع بهینه‌سازی
+# 📊 توابع کمکی
 # ==========================================
 async def get_system_info():
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
     return f"🧠 RAM: {mem.percent}%\n💾 Disk: {disk.percent}%"
 
+def get_duration(file_path):
+    """دریافت زمان فایل به ثانیه"""
+    try:
+        metadata = extractMetadata(createParser(file_path))
+        if metadata and metadata.has("duration"):
+            return metadata.get("duration").seconds
+    except: pass
+    return 0
+
+def format_seconds(seconds):
+    """تبدیل ثانیه به دقیقه:ثانیه"""
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h:d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
 async def get_stream_link(url):
-    """دریافت لینک استریم"""
-    # استفاده از best[height<=360] برای دریافت سبک‌ترین استریم ممکن
+    # کیفیت پایین (240p تا 360p) برای ثبات لایو
     ydl_opts = {
         'format': 'best[height<=360]',
         'noplaylist': True, 
@@ -137,60 +162,111 @@ async def get_stream_link(url):
             return info.get('url'), info.get('title', 'Live')
     except: return None, None
 
-async def start_stream_engine(chat_id, source):
-    """
-    موتور پخش اصلاح شده:
-    1. رفع ارور NoneType برای موزیک
-    2. رفع ناهماهنگی صدا و تصویر (Sync Fix)
-    """
+# ==========================================
+# 🔄 نمایشگر زمان (Progress Bar)
+# ==========================================
+async def progress_loop(chat_id, duration, message):
+    """حلقه‌ای برای آپدیت پیام و نمایش زمان پخش"""
+    start_time = time.time()
+    while chat_id in active_calls_data:
+        await asyncio.sleep(15) # هر 15 ثانیه آپدیت کن (برای جلوگیری از فلود)
+        
+        current_sec = int(time.time() - start_time)
+        if duration > 0 and current_sec > duration:
+            break
+            
+        try:
+            total_str = format_seconds(duration) if duration > 0 else "∞"
+            curr_str = format_seconds(current_sec)
+            
+            # محاسبه درصد (اگر موزیک باشد)
+            percent = ""
+            if duration > 0:
+                p = int((current_sec / duration) * 100)
+                percent = f"({p}%)"
+            
+            text = (
+                f"▶️ **در حال پخش...**\n\n"
+                f"⏳ زمان: `{curr_str}` / `{total_str}` {percent}\n"
+                f"🎵 وضعیت: پایدار"
+            )
+            await message.edit(text)
+        except: pass
+
+# ==========================================
+# 🎧 موتور استریم (اصلاح شده)
+# ==========================================
+async def start_music(chat_id, file_path):
+    """مخصوص پخش موزیک (بدون باگ کاور)"""
     if not call_py.active_calls:
         try: await call_py.start()
         except: pass
 
-    # تنظیمات FFmpeg برای هماهنگی صدا و تصویر
-    # -fflags +genpts: بازسازی تایم‌استمپ‌ها
-    # -copyts: کپی تایم‌استمپ‌های اصلی (جلوگیری از دریفت)
-    # -re: خواندن با سرعت واقعی (Realtime)
-    ffmpeg_params = "-fflags +genpts -copyts"
+    # پارامتر جادویی -vn: ویدیو را کاملاً حذف می‌کند تا کاور باعث کرش نشود
+    ffmpeg_params = "-vn"
 
-    # اصلاح باگ موزیک: همیشه باید VideoQuality ارسال شود
-    # حتی برای فایل صوتی، کتابخانه نیاز به پارامتر دارد.
     stream = MediaStream(
-        source,
-        audio_parameters=AudioQuality.MEDIUM, 
-        video_parameters=VideoQuality.SD_480p, # این خط باعث رفع ارور NoneType می‌شود
+        file_path,
+        audio_parameters=AudioQuality.MEDIUM,
+        video_parameters=None, # ویدیو خاموش
         ffmpeg_parameters=ffmpeg_params
     )
 
     try:
         try: await call_py.leave_group_call(chat_id)
         except: pass
-        
         await asyncio.sleep(1)
         await call_py.join_group_call(chat_id, stream)
     except Exception as e:
         if "no group call" in str(e).lower():
-            raise Exception("⚠️ **ویس‌کال خاموش است!** لطفاً روشن کنید.")
+            raise Exception("⚠️ ویس‌کال خاموش است!")
+        raise e
+
+async def start_live(chat_id, url):
+    """مخصوص پخش لایو (FPS کم برای کاهش لگ)"""
+    if not call_py.active_calls:
+        try: await call_py.start()
+        except: pass
+
+    # پارامترهای حیاتی برای سرورهای ضعیف:
+    # -r 20: فریم ریت را روی 20 قفل می‌کند (استاندارد 30 است). این فشار CPU را کم می‌کند.
+    # -preset ultrafast: سریعترین حالت انکود.
+    # -tune zerolatency: کاهش تاخیر برای لایو.
+    ffmpeg_params = "-r 20 -preset ultrafast -tune zerolatency"
+
+    stream = MediaStream(
+        url,
+        audio_parameters=AudioQuality.MEDIUM,
+        video_parameters=VideoQuality.SD_480p, # کیفیت تصویر استاندارد
+        ffmpeg_parameters=ffmpeg_params
+    )
+
+    try:
+        try: await call_py.leave_group_call(chat_id)
+        except: pass
+        await asyncio.sleep(1)
+        await call_py.join_group_call(chat_id, stream)
+    except Exception as e:
+        if "no group call" in str(e).lower():
+            raise Exception("⚠️ ویس‌کال خاموش است!")
         raise e
 
 # ==========================================
-# 👮‍♂️ سیستم دسترسی (کانال + گروه)
+# 👮‍♂️ دسترسی‌ها
 # ==========================================
 async def check_permission(event):
     if event.sender_id == ADMIN_ID: return True
     if event.out: return True
     if event.chat_id not in ALLOWED_CHATS: return False
     
-    # کانال همیشه مجاز است
+    # کانال همیشه مجاز
     if event.is_channel and (not event.is_group): return True
 
     try:
-        # ادمین‌های گروه (حتی مخفی)
         if event.sender_id == event.chat_id or event.sender_id == 1087968824: return True
         perm = await user_client.get_permissions(event.chat_id, event.sender_id)
         if perm.is_admin or perm.is_creator: return True
     except: pass
-    
     return False
 
 # ==========================================
@@ -199,42 +275,32 @@ async def check_permission(event):
 @bot.on(events.NewMessage(pattern='/start'))
 async def bot_start(event):
     if event.sender_id != ADMIN_ID or not event.is_private: return
-    
     conn = "✅ وصل" if user_client.is_connected() and await user_client.is_user_authorized() else "❌ قطع"
     
-    chats_list_text = ""
+    chats_list = ""
     if user_client.is_connected():
-        count = 0
-        for chat_id in ALLOWED_CHATS:
-            if chat_id == ADMIN_ID: continue
+        c = 0
+        for cid in ALLOWED_CHATS:
+            if cid == ADMIN_ID: continue
             try:
-                entity = await user_client.get_entity(chat_id)
-                name = getattr(entity, 'title', 'Unknown')
-                chats_list_text += f"{count+1}. **{name}** (`{chat_id}`)\n"
-                count += 1
-            except:
-                chats_list_text += f"{count+1}. `ID: {chat_id}`\n"
-                count += 1
-        if count == 0: chats_list_text = "لیست خالی است."
-    else:
-        chats_list_text = "⚠️ برای دیدن لیست، یوزربات باید وصل باشد."
+                e = await user_client.get_entity(cid)
+                name = getattr(e, 'title', str(cid))
+                chats_list += f"{c+1}. **{name}**\n"
+            except: chats_list += f"{c+1}. `{cid}`\n"
+            c+=1
+        if c==0: chats_list = "لیست خالی."
+    else: chats_list = "⚠️ یوزربات قطع است."
 
     msg = (
-        f"👋 **پنل مدیریت ربات (نسخه Sync Fix)**\n"
-        f"وضعیت یوزربات: {conn}\n\n"
-        f"🔐 **آموزش لاگین:**\n"
-        f"1. دستور `/phone +989...`\n"
-        f"2. دستور `/code 12345`\n"
-        f"3. دستور `/password ...`\n\n"
-        f"📡 **دستورات (کانال/گروه):**\n"
-        f"➕ `افزودن` یا `/add` (فعالسازی)\n"
-        f"➖ `حذف` یا `/del` (غیرفعالسازی)\n"
-        f"▶️ `پخش` یا `/play` (موزیک/ویدیو)\n"
-        f"🔴 `لایو` یا `/live` (پخش زنده)\n"
-        f"🔗 `لایو لینک` (پخش زنده لینک دلخواه)\n"
-        f"⏹ `قطع` یا `/stop`\n\n"
-        f"📋 **لیست چت‌های مجاز:**\n"
-        f"{chats_list_text}"
+        f"👋 **پنل مدیریت ربات (Ultra Lite)**\n"
+        f"وضعیت: {conn}\n\n"
+        f"🔐 **لاگین:** `/phone`, `/code`, `/password`\n\n"
+        f"📡 **دستورات:**\n"
+        f"➕ `/add` | ➖ `/del`\n"
+        f"🎵 `/play` (فقط موزیک)\n"
+        f"🔴 `/live` (پخش زنده)\n"
+        f"⏹ `/stop`\n\n"
+        f"📋 **لیست مجاز:**\n{chats_list}"
     )
     await event.reply(msg)
 
@@ -245,7 +311,7 @@ async def ph(event):
         if not user_client.is_connected(): await user_client.connect()
         r = await user_client.send_code_request(event.pattern_match.group(1).strip())
         login_state.update({'phone': event.pattern_match.group(1).strip(), 'hash': r.phone_code_hash})
-        await event.reply("✅ کد رو بفرست: `/code 12345`")
+        await event.reply("✅ کد: `/code 12345`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
@@ -255,7 +321,6 @@ async def co(event):
         await user_client.sign_in(login_state['phone'], event.pattern_match.group(1).strip(), phone_code_hash=login_state['hash'])
         await event.reply("✅ **لاگین شد!**")
         if not call_py.active_calls: await call_py.start()
-    except SessionPasswordNeededError: await event.reply("⚠️ رمز دوم: `/password ...`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
@@ -263,7 +328,7 @@ async def pa(event):
     if event.sender_id != ADMIN_ID: return
     try:
         await user_client.sign_in(password=event.pattern_match.group(1).strip())
-        await event.reply("✅ ورود تکمیل شد.")
+        await event.reply("✅ تکمیل شد.")
         if not call_py.active_calls: await call_py.start()
     except Exception as e: await event.reply(f"❌ {e}")
 
@@ -271,45 +336,34 @@ async def pa(event):
 # 👤 هندلرها (Userbot)
 # ==========================================
 
-# 1. افزودن (Add)
+# 1. افزودن
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/add|افزودن)(?:\s+(.+))?'))
 async def add_h(event):
     if event.sender_id != ADMIN_ID and not event.out: return
     target = event.pattern_match.group(2)
     chat_id = event.chat_id
-    name = "این چت"
-    
     if target:
         try:
             entity = await user_client.get_entity(target)
             chat_id = entity.id
-            name = getattr(entity, 'title', str(chat_id))
-        except: return await event.reply("❌ لینک نامعتبر.")
-    else:
-        try:
-            chat = await event.get_chat()
-            name = getattr(chat, 'title', str(chat_id))
-        except: pass
+        except: return await event.reply("❌ نامعتبر.")
     
     if chat_id not in ALLOWED_CHATS:
         ALLOWED_CHATS.append(chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply(f"✅ **{name}** به لیست مجاز اضافه شد.")
-    else:
-        await event.reply("⚠️ قبلاً اضافه شده بود.")
+        await event.reply(f"✅ چت `{chat_id}` مجاز شد.")
+    else: await event.reply("⚠️ قبلاً بود.")
 
-# 2. حذف (Del)
+# 2. حذف
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/del|حذف)'))
 async def del_h(event):
     if event.sender_id != ADMIN_ID and not event.out: return
     if event.chat_id in ALLOWED_CHATS:
         ALLOWED_CHATS.remove(event.chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply("🗑 از لیست مجاز حذف شد.")
-    else:
-        await event.reply("⚠️ اینجا مجاز نبود.")
+        await event.reply("🗑 حذف شد.")
 
-# 3. پینگ (Ping)
+# 3. پینگ
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/ping|پینگ)'))
 async def ping_h(event):
     if not await check_permission(event): return
@@ -320,37 +374,49 @@ async def ping_h(event):
     info = await get_system_info()
     await msg.edit(f"📶 **Ping:** `{ping}ms`\n{info}")
 
-# 4. پخش فایل (با رفع باگ NoneType)
+# 4. پخش موزیک (فقط صوتی)
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/play|پخش|/ply)'))
 async def play_h(event):
     if not await check_permission(event): return
     
     chat_id = event.chat_id
     reply = await event.get_reply_message()
-    if not reply or not (reply.audio or reply.video):
-        return await event.reply("❌ ریپلای کن.")
+    
+    # 🚫 جلوگیری از پخش ویدیو
+    if reply and reply.video:
+        return await event.reply("❌ **پخش فایل ویدیویی مجاز نیست!**\nفقط موزیک و لایو پشتیبانی می‌شود.")
+
+    if not reply or not reply.audio:
+        return await event.reply("❌ لطفاً روی یک آهنگ ریپلای کنید.")
 
     await force_cleanup(chat_id)
-    status = await event.reply("📥 **دانلود فایل...**")
+    status = await event.reply("📥 **دانلود موزیک...**")
     
     try:
-        path = await reply.download_media(file=os.path.join(DOWNLOAD_DIR, f"{chat_id}.mp4"))
+        path = await reply.download_media(file=os.path.join(DOWNLOAD_DIR, f"{chat_id}.mp3"))
         if not path: return await status.edit("❌ دانلود نشد.")
+        
+        # دریافت زمان آهنگ برای نمایش
+        duration = get_duration(path)
         
         active_calls_data[chat_id] = {"path": path, "type": "file"}
         
-        await status.edit("🚀 **اتصال به ویس‌کال...**")
+        await status.edit("🚀 **اتصال صوتی...**")
         
-        # اجرای موتور (برای همه فایل‌ها پارامتر ویدیو ارسال می‌شود تا کرش نکند)
-        await start_stream_engine(chat_id, path)
+        # استفاده از تابع مخصوص موزیک
+        await start_music(chat_id, path)
         
-        await status.edit("▶️ **پخش شروع شد.**")
+        await status.edit(f"🎵 **پخش موزیک شروع شد.**\n⏱ زمان: `{format_seconds(duration)}`")
+        
+        # شروع نمایش زمان
+        task = asyncio.create_task(progress_loop(chat_id, duration, status))
+        progress_tasks[chat_id] = task
 
     except Exception as e:
         await status.edit(f"❌ خطا: {e}")
         await force_cleanup(chat_id)
 
-# 5. پخش لایو (با رفع لگ و هماهنگی صدا/تصویر)
+# 5. پخش لایو
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_h(event):
     if not await check_permission(event): return
@@ -377,9 +443,10 @@ async def live_h(event):
 
         active_calls_data[chat_id] = {"path": final_url, "type": "live"}
         
-        await start_stream_engine(chat_id, final_url)
+        # استفاده از تابع مخصوص لایو (FPS 20)
+        await start_live(chat_id, final_url)
         
-        await status.edit(f"🔴 **پخش زنده:**\n📺 `{title}`\n⚡️ Sync Stabilizer فعال")
+        await status.edit(f"🔴 **پخش زنده:**\n📺 `{title}`\n⚡️ حالت: FPS 20 (کاهش فشار سرور)")
     except Exception as e:
         await status.edit(f"❌ خطا: {e}")
         await force_cleanup(chat_id)
@@ -405,7 +472,7 @@ async def on_end(client, update):
 # ==========================================
 async def main():
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Bot Running (Sync Fixed)"))
+    app.router.add_get("/", lambda r: web.Response(text="Bot Running (Lite Mode)"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
