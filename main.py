@@ -36,6 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MusicBot")
 
+# متغیرهای وضعیت
 login_state = {}
 active_calls_data = {}
 
@@ -114,8 +115,9 @@ async def start_stream_engine(chat_id, source, start_time=0):
         try: await call_py.start()
         except: pass
 
-    # تنظیمات کیفیت SD برای جلوگیری از لگ
+    # تنظیمات کیفیت SD و فریم ریت پایین برای جلوگیری از لگ شدید
     ffmpeg_params = f"-ss {start_time}" if start_time > 0 else ""
+    
     stream = MediaStream(
         source, 
         audio_parameters=AudioQuality.MEDIUM, 
@@ -124,7 +126,7 @@ async def start_stream_engine(chat_id, source, start_time=0):
     )
 
     try:
-        # متد امن: خروج اجباری و ورود مجدد
+        # متد امن: خروج اجباری و ورود مجدد (برای جلوگیری از کرش)
         try:
             await call_py.leave_group_call(chat_id)
             await asyncio.sleep(1) # وقفه حیاتی
@@ -133,80 +135,82 @@ async def start_stream_engine(chat_id, source, start_time=0):
         await call_py.join_group_call(chat_id, stream)
     except Exception as e:
         if "no group call" in str(e).lower():
-            raise Exception("ویس‌کال خاموش است! (در کانال/گروه Voice Chat را روشن کنید)")
+            raise Exception("⚠️ ویس‌کال خاموش است! (Voice Chat را روشن کنید)")
         raise e
 
 def is_authorized(event):
     """
-    بررسی اینکه پیام معتبر است:
-    1. از طرف ادمین باشد (ADMIN_ID)
-    2. یا از طرف خود یوزربات باشد (event.out - این برای کانال ضروری است)
+    بررسی اعتبار:
+    1. ادمین باشد
+    2. یا خود یوزربات باشد (out=True) -> این برای کانال حیاتی است
     """
     return event.sender_id == ADMIN_ID or event.out
 
 # ==========================================
-# 🤖 ربات فقط برای لاگین
+# 🤖 ربات فقط برای لاگین (فقط در PV)
 # ==========================================
 @bot.on(events.NewMessage(pattern='/start'))
 async def bot_start(event):
-    if event.sender_id != ADMIN_ID: return
+    if event.sender_id != ADMIN_ID or not event.is_private: return
     status = "✅ وصل" if user_client.is_connected() and await user_client.is_user_authorized() else "❌ قطع"
-    await event.reply(f"وضعیت یوزربات: {status}\nدستورات لاگین:\n`/phone +98...`\n`/code ...`\n`/password ...`")
+    await event.reply(f"یوزربات: {status}\n\n`/phone +98...`\n`/code ...`\n`/password ...`")
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def ph(event):
-    if event.sender_id != ADMIN_ID: return
+    if event.sender_id != ADMIN_ID or not event.is_private: return
     try:
         if not user_client.is_connected(): await user_client.connect()
         r = await user_client.send_code_request(event.pattern_match.group(1).strip())
         login_state.update({'phone': event.pattern_match.group(1).strip(), 'hash': r.phone_code_hash})
-        await event.reply("کد؟ `/code 12345`")
+        await event.reply("کد: `/code 12345`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
 async def co(event):
-    if event.sender_id != ADMIN_ID: return
+    if event.sender_id != ADMIN_ID or not event.is_private: return
     try:
         await user_client.sign_in(login_state['phone'], event.pattern_match.group(1).strip(), phone_code_hash=login_state['hash'])
         await event.reply("✅ لاگین شد.")
         if not call_py.active_calls: await call_py.start()
-    except SessionPasswordNeededError: await event.reply("رمز دوم؟ `/password ...`")
+    except SessionPasswordNeededError: await event.reply("پسورد: `/password ...`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
 async def pa(event):
-    if event.sender_id != ADMIN_ID: return
+    if event.sender_id != ADMIN_ID or not event.is_private: return
     try:
         await user_client.sign_in(password=event.pattern_match.group(1).strip())
-        await event.reply("✅ ورود تکمیل.")
+        await event.reply("✅ تمام.")
         if not call_py.active_calls: await call_py.start()
     except Exception as e: await event.reply(f"❌ {e}")
 
 # ==========================================
-# ⚡️ پردازشگر مرکزی پیام‌ها (Userbot)
+# ⚡️ هسته مرکزی (Userbot Universal Handler)
 # ==========================================
 @user_client.on(events.NewMessage)
-async def message_handler(event):
-    # 1. فقط پیام‌های متنی را پردازش کن
-    if not event.raw_text: return
+async def universal_handler(event):
+    # دریافت متن پیام (حتی اگر کپشن باشد)
+    text = event.raw_text
+    if not text: return
     
-    # 2. فقط اگر ادمین یا خود یوزربات فرستاده باشد
-    if not is_authorized(event): return
-
-    # تبدیل متن به حروف کوچک و حذف فاصله‌های اضافی
-    text = event.raw_text.lower().strip()
+    # تمیزکاری متن (حروف کوچک، حذف فاصله اول و آخر)
+    text = text.lower().strip()
     chat_id = str(event.chat_id)
 
-    # --- دستورات مدیریتی (همیشه فعال) ---
+    # فقط ادمین یا خود یوزربات
+    if not is_authorized(event): return
+
+    # ---------------------------------------
+    # 1. دستورات مدیریتی (Add/Del/List)
+    # ---------------------------------------
     
-    # دستور: /add
     if text.startswith('/add'):
         try:
             target = text.replace('/add', '').strip()
             if not target: 
-                entity = await event.get_chat() # گروه جاری
+                entity = await event.get_chat()
             else: 
-                entity = await user_client.get_entity(target) # لینک یا آیدی
+                entity = await user_client.get_entity(target)
             
             cid = str(entity.id)
             title = getattr(entity, 'title', 'Chat')
@@ -215,37 +219,38 @@ async def message_handler(event):
             save_whitelist(WHITELIST)
             await event.reply(f"✅ **{title}** مجاز شد.\n🆔 `{cid}`")
         except Exception as e:
-            await event.reply(f"❌ خطا در افزودن: {e}")
+            await event.reply(f"❌ خطا: {e}")
         return
 
-    # دستور: /del
     if text.startswith('/del'):
         try:
             target = text.replace('/del', '').strip()
             cid = target if target else chat_id
-            
             if cid in WHITELIST:
                 del WHITELIST[cid]
                 save_whitelist(WHITELIST)
-                await event.reply(f"🗑 `{cid}` حذف شد.")
+                await event.reply(f"🗑 حذف شد: `{cid}`")
             else:
                 await event.reply("⚠️ در لیست نبود.")
         except: pass
         return
-        
-    # دستور: /list
+
     if text == '/list':
         if not WHITELIST: return await event.reply("لیست خالی.")
-        msg = "**لیست مجاز:**\n" + "\n".join([f"🔹 {d['title']} (`{i}`)" for i, d in WHITELIST.items()])
+        msg = "**مجازها:**\n" + "\n".join([f"🔹 {d['title']} (`{i}`)" for i, d in WHITELIST.items()])
         await event.reply(msg)
         return
 
-    # --- از اینجا به بعد فقط برای چت‌های مجاز است ---
+    # ---------------------------------------
+    # 2. بررسی لیست سفید
+    # ---------------------------------------
     if chat_id not in WHITELIST: return
 
-    # دستور: پخش / ply / play
-    # چک میکنیم آیا یکی از کلمات کلیدی در متن هست
-    if text == '/ply' or text == 'پخش' or text == '/play':
+    # ---------------------------------------
+    # 3. دستور پخش (فایل)
+    # ---------------------------------------
+    # این لیست کلمات کلیدی است. اگر پیام دقیقا یکی از اینها باشد، اجرا میشود.
+    if text in ['/ply', 'پخش', 'play', '/play']:
         reply = await event.get_reply_message()
         if not reply or not (reply.audio or reply.video):
             return await event.reply("❌ روی فایل ریپلای کن.")
@@ -254,26 +259,28 @@ async def message_handler(event):
         await cleanup(event.chat_id)
         
         try:
-            # دانلود فایل
+            # دانلود
             path = await reply.download_media(file=os.path.join(DOWNLOAD_DIR, f"{chat_id}.mp4"))
-            
-            if not path: return await status.edit("❌ خطا در دانلود.")
+            if not path: return await status.edit("❌ دانلود نشد.")
             
             active_calls_data[event.chat_id] = {"path": path, "type": "file"}
             
             await status.edit("🚀 **پخش...**")
             await start_stream_engine(event.chat_id, path)
-            await status.delete()
+            await status.delete() # حذف پیام دانلود
             
         except Exception as e:
             await event.reply(f"❌ خطا: {e}")
             await cleanup(event.chat_id)
         return
 
-    # دستور: لایو / تی وی / live
+    # ---------------------------------------
+    # 4. دستور لایو (TV)
+    # ---------------------------------------
+    # اگر پیام با یکی از اینها شروع شود
     if text.startswith('/live') or text.startswith('تی وی') or text.startswith('live'):
-        # استخراج لینک اگر وجود داشته باشد (با فاصله جدا شده)
         parts = text.split()
+        # اگر لینک داده بود، دومی رو بردار، اگه نه لینک پیشفرض
         link = parts[1] if len(parts) > 1 else IRAN_INTL_URL
         title = "لینک کاربر" if len(parts) > 1 else "ایران اینترنشنال"
         
@@ -281,8 +288,8 @@ async def message_handler(event):
         await cleanup(event.chat_id)
         
         try:
-            # اگر لینک مستقیم نبود (لینک یوتیوب بود)، تبدیلش کن
             final_url = link
+            # اگر لینک مستقیم نبود (مثل یوتیوب)، تبدیل کن
             if link != IRAN_INTL_URL:
                 ydl_opts = {'format': 'best[height<=360]/best', 'noplaylist': True, 'quiet': True, 'geo_bypass': True}
                 try:
@@ -297,15 +304,17 @@ async def message_handler(event):
             
             await status.edit(f"🔴 **پخش زنده: {title}**")
             await start_stream_engine(event.chat_id, final_url)
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             await status.delete()
             
         except Exception as e:
             await event.reply(f"❌ خطا: {e}")
         return
 
-    # دستور: قطع / stop
-    if text == '/stop' or text == 'قطع' or text == 'stop':
+    # ---------------------------------------
+    # 5. دستور قطع (Stop)
+    # ---------------------------------------
+    if text in ['/stop', 'قطع', 'stop']:
         try:
             await call_py.leave_group_call(event.chat_id)
             await cleanup(event.chat_id)
@@ -318,7 +327,6 @@ async def message_handler(event):
 # ==========================================
 @user_client.on(events.ChatAction)
 async def auto_leave(event):
-    # اگر یوزربات اد شد
     if event.user_added and event.user_id == (await user_client.get_me()).id:
         if str(event.chat_id) not in WHITELIST and event.chat_id != ADMIN_ID:
             try:
@@ -340,7 +348,7 @@ async def main():
     try:
         await user_client.connect()
         if await user_client.is_user_authorized(): 
-            print("Userbot Connected")
+            logger.info("Userbot Connected")
             await call_py.start()
     except: pass
     await bot.run_until_disconnected()
