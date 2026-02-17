@@ -115,9 +115,8 @@ async def start_stream_engine(chat_id, source, start_time=0):
         try: await call_py.start()
         except: pass
 
-    # تنظیمات کیفیت SD و فریم ریت پایین برای جلوگیری از لگ شدید
+    # تنظیمات کیفیت SD برای جلوگیری از لگ
     ffmpeg_params = f"-ss {start_time}" if start_time > 0 else ""
-    
     stream = MediaStream(
         source, 
         audio_parameters=AudioQuality.MEDIUM, 
@@ -126,7 +125,7 @@ async def start_stream_engine(chat_id, source, start_time=0):
     )
 
     try:
-        # متد امن: خروج اجباری و ورود مجدد (برای جلوگیری از کرش)
+        # متد امن: خروج اجباری و ورود مجدد
         try:
             await call_py.leave_group_call(chat_id)
             await asyncio.sleep(1) # وقفه حیاتی
@@ -135,7 +134,7 @@ async def start_stream_engine(chat_id, source, start_time=0):
         await call_py.join_group_call(chat_id, stream)
     except Exception as e:
         if "no group call" in str(e).lower():
-            raise Exception("⚠️ ویس‌کال خاموش است! (Voice Chat را روشن کنید)")
+            raise Exception("ویس‌کال خاموش است! (در کانال/گروه Voice Chat را روشن کنید)")
         raise e
 
 def is_authorized(event):
@@ -153,7 +152,7 @@ def is_authorized(event):
 async def bot_start(event):
     if event.sender_id != ADMIN_ID or not event.is_private: return
     status = "✅ وصل" if user_client.is_connected() and await user_client.is_user_authorized() else "❌ قطع"
-    await event.reply(f"یوزربات: {status}\n\n`/phone +98...`\n`/code ...`\n`/password ...`")
+    await event.reply(f"وضعیت یوزربات: {status}\nدستورات لاگین:\n`/phone +98...`\n`/code ...`\n`/password ...`")
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def ph(event):
@@ -172,7 +171,7 @@ async def co(event):
         await user_client.sign_in(login_state['phone'], event.pattern_match.group(1).strip(), phone_code_hash=login_state['hash'])
         await event.reply("✅ لاگین شد.")
         if not call_py.active_calls: await call_py.start()
-    except SessionPasswordNeededError: await event.reply("پسورد: `/password ...`")
+    except SessionPasswordNeededError: await event.reply("رمز دوم؟ `/password ...`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
@@ -208,9 +207,9 @@ async def universal_handler(event):
         try:
             target = text.replace('/add', '').strip()
             if not target: 
-                entity = await event.get_chat()
+                entity = await event.get_chat() # گروه جاری
             else: 
-                entity = await user_client.get_entity(target)
+                entity = await user_client.get_entity(target) # لینک یا آیدی
             
             cid = str(entity.id)
             title = getattr(entity, 'title', 'Chat')
@@ -219,25 +218,26 @@ async def universal_handler(event):
             save_whitelist(WHITELIST)
             await event.reply(f"✅ **{title}** مجاز شد.\n🆔 `{cid}`")
         except Exception as e:
-            await event.reply(f"❌ خطا: {e}")
+            await event.reply(f"❌ خطا در افزودن: {e}")
         return
 
     if text.startswith('/del'):
         try:
             target = text.replace('/del', '').strip()
             cid = target if target else chat_id
+            
             if cid in WHITELIST:
                 del WHITELIST[cid]
                 save_whitelist(WHITELIST)
-                await event.reply(f"🗑 حذف شد: `{cid}`")
+                await event.reply(f"🗑 `{cid}` حذف شد.")
             else:
                 await event.reply("⚠️ در لیست نبود.")
         except: pass
         return
-
+        
     if text == '/list':
         if not WHITELIST: return await event.reply("لیست خالی.")
-        msg = "**مجازها:**\n" + "\n".join([f"🔹 {d['title']} (`{i}`)" for i, d in WHITELIST.items()])
+        msg = "**لیست مجاز:**\n" + "\n".join([f"🔹 {d['title']} (`{i}`)" for i, d in WHITELIST.items()])
         await event.reply(msg)
         return
 
@@ -259,9 +259,10 @@ async def universal_handler(event):
         await cleanup(event.chat_id)
         
         try:
-            # دانلود
+            # دانلود فایل
             path = await reply.download_media(file=os.path.join(DOWNLOAD_DIR, f"{chat_id}.mp4"))
-            if not path: return await status.edit("❌ دانلود نشد.")
+            
+            if not path: return await status.edit("❌ خطا در دانلود.")
             
             active_calls_data[event.chat_id] = {"path": path, "type": "file"}
             
