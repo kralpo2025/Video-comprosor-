@@ -8,8 +8,6 @@ import shutil
 import time
 import psutil
 import sys
-
-# ایمپورت‌های ضروری وب‌سرور و تلگرام
 from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import MemorySession
@@ -26,12 +24,11 @@ API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"
 ADMIN_ID = 7419222963
 
-# لینک ثابت جدید
-IRAN_INTL_URL = "https://dev-live.livetvstream.co.uk/LS-63503-4/index.m3u8"
+# لینک ثابت جدید (ایران اینترنشنال)
+DEFAULT_LIVE_URL = "https://dev-live.livetvstream.co.uk/LS-63503-4/index.m3u8"
 
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 AUTH_FILE = "whitelist.json"
-# پورت را از محیط می‌گیرد، اگر نبود 8080
 PORT = int(os.environ.get("PORT", 8080))
 
 logging.basicConfig(
@@ -40,6 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MusicBot")
 
+# متغیرهای وضعیت
 login_state = {}
 active_calls_data = {}
 
@@ -47,7 +45,7 @@ if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 
 # ==========================================
-# 🔐 لیست سفید (Whitelist)
+# 🔐 مدیریت لیست سفید (Whitelist)
 # ==========================================
 def load_whitelist():
     if not os.path.exists(AUTH_FILE): return {}
@@ -63,15 +61,17 @@ def save_whitelist(data):
 WHITELIST = load_whitelist()
 
 # ==========================================
-# 🛠 نصب FFmpeg (مخصوص Render)
+# 🛠 نصب FFmpeg
 # ==========================================
 def setup_ffmpeg():
     cwd = os.getcwd()
     if cwd not in os.environ["PATH"]:
         os.environ["PATH"] = cwd + os.pathsep + os.environ["PATH"]
+    
     if shutil.which("ffmpeg"): return
+
+    logger.info("⏳ Installing FFmpeg...")
     try:
-        logger.info("⏳ Installing FFmpeg...")
         url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
         if os.path.exists("ffmpeg.tar.xz"): os.remove("ffmpeg.tar.xz")
         wget.download(url, "ffmpeg.tar.xz")
@@ -90,9 +90,10 @@ setup_ffmpeg()
 # ==========================================
 # 🚀 کلاینت‌ها
 # ==========================================
-# ربات (فقط لاگین)
+# ربات: فقط برای لاگین در پیوی (هیچ کدی برای گروه ندارد)
 bot = TelegramClient(MemorySession(), API_ID, API_HASH)
-# یوزربات (اجرا کننده)
+
+# یوزربات: موتور اصلی
 user_client = TelegramClient('user_session', API_ID, API_HASH)
 call_py = PyTgCalls(user_client)
 
@@ -101,20 +102,16 @@ call_py = PyTgCalls(user_client)
 # ==========================================
 
 def get_server_stats():
-    """نمایش وضعیت سرور"""
+    """دریافت پینگ و منابع سیستم"""
     try:
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
-        # محاسبه پینگ (فیک برای نمایش سرعت)
-        t1 = time.time(); time.sleep(0.001); t2 = time.time()
-        ping = int((t2 - t1) * 1000)
         return (
             f"📊 **وضعیت سرور:**\n"
             f"🧠 رم: `{mem.percent}%`\n"
-            f"💾 دیسک: `{disk.percent}%`\n"
-            f"📶 پینگ: `{ping}ms`"
+            f"💾 دیسک: `{disk.percent}%`"
         )
-    except: return "خطا در دریافت اطلاعات."
+    except: return "خطا در خواندن اطلاعات."
 
 async def cleanup(chat_id):
     if chat_id in active_calls_data:
@@ -126,11 +123,12 @@ async def cleanup(chat_id):
         del active_calls_data[chat_id]
 
 async def start_stream_engine(chat_id, source):
+    """موتور پخش بهینه (SD Quality)"""
     if not call_py.active_calls:
         try: await call_py.start()
         except: pass
 
-    # کیفیت SD برای جلوگیری از لگ
+    # تنظیمات کیفیت: SD_480p (تعادل بین کیفیت و سرعت)
     stream = MediaStream(
         source, 
         audio_parameters=AudioQuality.MEDIUM, 
@@ -138,7 +136,7 @@ async def start_stream_engine(chat_id, source):
     )
 
     try:
-        # خروج و ورود مجدد (برای رفع باگ‌ها)
+        # خروج و ورود مجدد برای جلوگیری از باگ Already Joined
         try:
             await call_py.leave_group_call(chat_id)
             await asyncio.sleep(1)
@@ -151,11 +149,15 @@ async def start_stream_engine(chat_id, source):
         raise e
 
 def is_authorized(event):
-    """پیام از طرف ادمین است یا خود یوزربات (برای کانال)"""
+    """
+    آیا پیام معتبر است؟
+    1. ادمین فرستاده باشد (ADMIN_ID)
+    2. یا خود یوزربات در کانال فرستاده باشد (event.out)
+    """
     return event.sender_id == ADMIN_ID or event.out
 
 # ==========================================
-# 🤖 ربات (فقط لاگین در PV)
+# 🤖 بخش ربات (فقط لاگین در پیوی)
 # ==========================================
 @bot.on(events.NewMessage(pattern='/start'))
 async def bot_start(event):
@@ -163,20 +165,19 @@ async def bot_start(event):
     
     status = "✅ متصل" if user_client.is_connected() and await user_client.is_user_authorized() else "❌ قطع"
     
-    msg = (
-        f"👋 **پنل مدیریت (نسخه بدون دکمه)**\n"
-        f"وضعیت یوزربات: {status}\n\n"
-        f"🔐 **لاگین:**\n"
-        f"`/phone` | `/code` | `/password`\n\n"
-        f"📋 **راهنما (دستورات فارسی/انگلیسی):**\n"
-        f"1️⃣ `پخش` یا `/ply` (ریپلای روی فایل)\n"
-        f"2️⃣ `لایو` (شبکه خبر) | `لایو [لینک]` (لینک دلخواه)\n"
-        f"3️⃣ `قطع` یا `/stop`\n"
-        f"4️⃣ `پینگ` (وضعیت سرور)\n"
-        f"5️⃣ `/add` (افزودن) | `/del` (حذف)\n"
-        f"6️⃣ `/list` (نمایش لیست مجاز)"
+    await event.reply(
+        f"👋 **پنل یوزربات (بدون دکمه)**\n"
+        f"وضعیت: {status}\n\n"
+        f"🔐 **لاگین:**\n`/phone` | `/code` | `/password`\n\n"
+        f"📋 **دستورات (فارسی/انگلیسی):**\n"
+        f"🔹 `پخش` یا `/ply` (روی فایل)\n"
+        f"🔹 `لایو` (شبکه خبر)\n"
+        f"🔹 `لایو [لینک]` (لینک دلخواه)\n"
+        f"🔹 `قطع` یا `/stop`\n"
+        f"🔹 `پینگ` (وضعیت منابع)\n"
+        f"🔹 `/add` (افزودن) | `/del` (حذف)\n"
+        f"🔹 `/list` (نمایش لیست)"
     )
-    await event.reply(msg)
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def ph(event):
@@ -185,8 +186,8 @@ async def ph(event):
         if not user_client.is_connected(): await user_client.connect()
         r = await user_client.send_code_request(event.pattern_match.group(1).strip())
         login_state.update({'phone': event.pattern_match.group(1).strip(), 'hash': r.phone_code_hash})
-        await event.reply("کد: `/code 12345`")
-    except Exception as e: await event.reply(f"❌ {e}")
+        await event.reply("کد ارسالی تلگرام: `/code 12345`")
+    except Exception as e: await event.reply(f"❌ خطا: {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
 async def co(event):
@@ -196,7 +197,7 @@ async def co(event):
         await event.reply("✅ لاگین شد.")
         if not call_py.active_calls: await call_py.start()
     except SessionPasswordNeededError: await event.reply("رمز دوم: `/password ...`")
-    except Exception as e: await event.reply(f"❌ {e}")
+    except Exception as e: await event.reply(f"❌ خطا: {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
 async def pa(event):
@@ -205,30 +206,33 @@ async def pa(event):
         await user_client.sign_in(password=event.pattern_match.group(1).strip())
         await event.reply("✅ ورود تکمیل شد.")
         if not call_py.active_calls: await call_py.start()
-    except Exception as e: await event.reply(f"❌ {e}")
+    except Exception as e: await event.reply(f"❌ خطا: {e}")
 
 # ==========================================
-# ⚡️ پردازشگر مرکزی یوزربات (Universal Handler)
+# ⚡️ هسته مرکزی یوزربات (Universal Handler)
 # ==========================================
+# این تابع جایگزین تمام هندلرهای قبلی است تا تداخل ایجاد نشود
 @user_client.on(events.NewMessage)
-async def main_handler(event):
-    """
-    این تابع تمام پیام‌ها را می‌گیرد و بررسی می‌کند.
-    """
+async def universal_handler(event):
+    # 1. دریافت متن
     text = event.raw_text
     if not text: return
     
-    # استانداردسازی: حروف کوچک، حذف فاصله اضافی
+    # استانداردسازی (حروف کوچک و حذف فاصله)
     cmd = text.lower().strip()
     chat_id = str(event.chat_id)
 
-    # بررسی ادمین بودن
+    # 2. بررسی هویت (ادمین یا خود یوزربات)
     if not is_authorized(event): return
 
-    # --- مدیریت لیست سفید (/add) ---
-    if cmd.startswith('/add') or cmd.startswith('اد'):
+    # ==========================
+    # مدیریت لیست سفید
+    # ==========================
+    
+    # افزودن (/add)
+    if cmd.startswith('/add'):
         try:
-            target = cmd.replace('/add', '').replace('اد', '').strip()
+            target = cmd.replace('/add', '').strip()
             if not target: 
                 entity = await event.get_chat()
             else: 
@@ -244,20 +248,20 @@ async def main_handler(event):
         except Exception as e: await event.reply(f"❌ خطا: {e}")
         return
 
-    # --- حذف از لیست سفید (/del) ---
-    if cmd.startswith('/del') or cmd.startswith('حذف'):
+    # حذف (/del)
+    if cmd.startswith('/del'):
         try:
-            cid = chat_id # حذف گروه جاری
+            cid = str(event.chat_id)
             if cid in WHITELIST:
                 del WHITELIST[cid]
                 save_whitelist(WHITELIST)
-                await event.reply("🗑 از لیست حذف شد.")
-            else: await event.reply("⚠️ اینجا در لیست نبود.")
+                await event.reply("🗑 حذف شد.")
+            else: await event.reply("⚠️ در لیست نبود.")
         except: pass
         return
 
-    # --- نمایش لیست (/list) ---
-    if cmd == '/list' or cmd == 'لیست':
+    # لیست (/list)
+    if cmd == '/list':
         if not WHITELIST: return await event.reply("لیست خالی است.")
         msg = "**📋 لیست مجاز:**\n\n"
         for i, d in WHITELIST.items():
@@ -265,18 +269,22 @@ async def main_handler(event):
         await event.reply(msg)
         return
 
-    # ================================
-    # چک کردن مجوز برای دستورات پخش
-    # ================================
+    # ==========================
+    # بررسی مجوز پخش
+    # ==========================
     if chat_id not in WHITELIST: return
 
-    # --- پینگ (Ping) ---
-    if cmd in ['/ping', 'پینگ', 'ping']:
+    # ==========================
+    # دستورات اجرایی
+    # ==========================
+
+    # 1. پینگ (Ping)
+    if cmd in ['پینگ', '/ping', 'ping']:
         await event.reply(get_server_stats())
         return
 
-    # --- پخش فایل (Play) ---
-    if cmd in ['/ply', 'پخش', 'play']:
+    # 2. پخش فایل (پخش / ply)
+    if cmd in ['پخش', '/ply', 'play']:
         reply = await event.get_reply_message()
         if not reply or not (reply.audio or reply.video):
             return await event.reply("❌ ریپلای کن.")
@@ -286,14 +294,14 @@ async def main_handler(event):
         
         try:
             path = await reply.download_media(file=os.path.join(DOWNLOAD_DIR, f"{chat_id}.mp4"))
-            if not path: return await status.edit("❌ دانلود نشد.")
+            if not path: return await status.edit("❌ خطا در دانلود.")
             
             active_calls_data[event.chat_id] = {"path": path, "type": "file"}
             
-            await status.edit("🚀 **پخش...**")
+            await status.edit("🚀 **پخش فایل...**")
             await start_stream_engine(event.chat_id, path)
             
-            # پاکسازی پیام بعد از 5 ثانیه
+            # حذف پیام بعد از 5 ثانیه
             await asyncio.sleep(5)
             await status.delete()
             
@@ -302,27 +310,29 @@ async def main_handler(event):
             await cleanup(event.chat_id)
         return
 
-    # --- پخش زنده (Live) ---
-    # پشتیبانی از: لایو، لایو لینک، /live، /live link
-    if cmd.startswith(('لایو', '/live', 'تی وی')):
-        # جدا کردن لینک (روی متن اصلی برای حفظ بزرگی/کوچکی حروف لینک)
+    # 3. پخش لایو (لایو / live)
+    # پشتیبانی از: لایو، لایو [لینک]، /live
+    if cmd.startswith(('لایو', '/live', 'تی وی', 'tv')):
         parts = text.split(maxsplit=1)
         
-        link = parts[1].strip() if len(parts) > 1 else IRAN_INTL_URL
-        title = "لینک سفارشی" if len(parts) > 1 else "ایران اینترنشنال"
-        
-        # اگر لینک سفارشی بود، پیام کاربر پاک شود
+        # اگر لینک دارد
         if len(parts) > 1:
+            link = parts[1].strip()
+            title = "لینک سفارشی"
+            # حذف پیام کاربر (برای تمیزی)
             try: await event.delete()
             except: pass
+        else:
+            link = DEFAULT_LIVE_URL
+            title = "ایران اینترنشنال"
 
         status = await event.reply(f"📡 **اتصال به {title}...**")
         await cleanup(event.chat_id)
         
         try:
             final_url = link
-            # اگر لینک مستقیم نبود (یوتیوب و...)
-            if link != IRAN_INTL_URL:
+            # اگر لینک مستقیم نبود
+            if link != DEFAULT_LIVE_URL:
                 ydl_opts = {'format': 'best[height<=360]/best', 'noplaylist': True, 'quiet': True, 'geo_bypass': True}
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -333,7 +343,7 @@ async def main_handler(event):
 
             active_calls_data[event.chat_id] = {"path": final_url, "type": "live"}
             
-            await status.edit(f"🔴 **پخش زنده:**\n{title}")
+            await status.edit(f"🔴 **پخش زنده:** {title}")
             await start_stream_engine(event.chat_id, final_url)
             
             await asyncio.sleep(5)
@@ -343,8 +353,8 @@ async def main_handler(event):
             await event.reply(f"❌ خطا: {e}")
         return
 
-    # --- قطع (Stop) ---
-    if cmd in ['/stop', 'قطع', 'بستن', 'stop']:
+    # 4. قطع (Stop)
+    if cmd in ['قطع', '/stop', 'بستن', 'stop']:
         try:
             await call_py.leave_group_call(event.chat_id)
             await cleanup(event.chat_id)
@@ -353,7 +363,7 @@ async def main_handler(event):
         return
 
 # ==========================================
-# 🛡 امنیت (خروج خودکار)
+# 🛡 امنیت (Auto Leave)
 # ==========================================
 @user_client.on(events.ChatAction)
 async def auto_leave(event):
@@ -368,7 +378,7 @@ async def auto_leave(event):
 # 🌐 سرور (Web Server)
 # ==========================================
 async def handle_req(request):
-    return web.Response(text="Bot is Running")
+    return web.Response(text="Running")
 
 async def start_server():
     app = web.Application()
@@ -377,21 +387,15 @@ async def start_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logger.info(f"🌍 Web Server Started on Port {PORT}")
+    logger.info(f"WebServer on {PORT}")
 
 async def main():
-    # اجرای وب‌سرور در پس‌زمینه
     await start_server()
-    
-    # اجرای ربات‌ها
     await bot.start(bot_token=BOT_TOKEN)
     try:
         await user_client.connect()
-        if await user_client.is_user_authorized(): 
-            logger.info("✅ Userbot Connected")
-            await call_py.start()
+        if await user_client.is_user_authorized(): await call_py.start()
     except: pass
-    
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
