@@ -156,7 +156,7 @@ async def anti_annoying(event):
     
     try:
         await event.reply(random.choice(insults))
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(10)
         # پاک کردن دوطرفه
         await user_client.delete_dialog(event.sender_id, revoke=True)
     except: pass
@@ -279,7 +279,7 @@ async def live_h(event):
     try: await event.delete()
     except: pass
 
-    status = await user_client.send_message(event.chat_id, "📡 در حال رندر مستقیم لایو...")
+    status = await user_client.send_message(event.chat_id, "📡  در حال اتصال به شبکه ایران اینترنشنال☆...")
 
     try:
         # دریافت لینک مستقیم استریم (بسیار مهم)
@@ -296,7 +296,7 @@ async def stop_h(event):
     try:
         await call_py.leave_group_call(event.chat_id)
         gc.collect()
-        await event.reply("⏹ قطع شد.")
+        await event.reply("⏹ قطع شد روز خوبی داشته باشید♡.")
     except: pass
 
 # ==========================================
