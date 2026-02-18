@@ -17,6 +17,7 @@ from telethon.tl.types import Channel
 # کتابخانه‌های نسخه 1.2.9 (لگاسی)
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
+
 import yt_dlp
 
 # ==========================================
@@ -37,10 +38,10 @@ logger = logging.getLogger("LegacyStreamer")
 login_state = {}
 
 # ==========================================
-# 🔐 لیست مجاز (Strict Policy)
+# 🔐 مدیریت لیست مجاز (Strict Security)
 # ==========================================
 def load_allowed_chats():
-    if not os.path.exists(AUTH_FILE): return [] # لیست اولیه خالی
+    if not os.path.exists(AUTH_FILE): return []
     try:
         with open(AUTH_FILE, 'r') as f:
             data = json.load(f)
@@ -92,7 +93,7 @@ async def get_system_info():
 
 async def get_stream_link(url):
     ydl_opts = {
-        'format': 'best[height<=360]/best', 
+        'format': 'best', 
         'noplaylist': True, 
         'quiet': True
     }
@@ -103,23 +104,16 @@ async def get_stream_link(url):
     except: return url, "Live Stream"
 
 async def start_stream_v1(chat_id, source):
-    """استریم لایو با پارامترهای ضد لگ مخصوص نسخه 1.2.9"""
+    """استریم مستقیم بدون بهینه‌سازی اضافی (طبق درخواست)"""
     if not call_py.active_calls:
         try: await call_py.start()
         except: pass
 
-    # پارامترهایی که مشکل "تق‌تق" در لینک‌های m3u8 را حل می‌کنند
-    # اضافه کردن reconnect باعث می‌شود در صورت نوسان نت، استریم قطع نشود
-    ffmpeg_params = (
-        "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-        "-probesize 10M -analyzeduration 10M -preset ultrafast -tune zerolatency"
-    )
-
+    # استفاده از تنظیمات مستقیم بدون فلگ‌های اضافی FFmpeg
     stream = MediaStream(
         source,
         audio_parameters=AudioQuality.MEDIUM, 
-        video_parameters=VideoQuality.SD_480p,
-        ffmpeg_parameters=ffmpeg_params
+        video_parameters=VideoQuality.SD_480p 
     )
 
     try:
@@ -133,17 +127,17 @@ async def start_stream_v1(chat_id, source):
         raise e
 
 # ==========================================
-# 👮‍♂️ سیستم امنیتی (فقط مجازها - وگرنه فحش و لفت)
+# 👮‍♂️ سیستم امنیتی (فقط لیست سفید - وگرنه فحش و لفت)
 # ==========================================
-async def security_check(event):
+async def strict_security_check(event):
     chat_id = event.chat_id
-    # اگر چت مجاز بود
+    # چک کردن لیست سفید (حتی برای ادمین اصلی)
     if chat_id in ALLOWED_CHATS:
         return True
     
-    # اگر مجاز نبود (حتی برای ادمین)
+    # اگر در لیست نبود: فحش و خروج
     try:
-        await event.reply("💢 مرتیکه پلشت! ادمینت غلط کرده منو آورده اینجا. این چت توی لیست سفید من نیست. لفت میدم سیکتیر!")
+        await event.reply("💢 مرتیکه کسکش! این چت توی لیست سفید من نیست. ادمینت غلط کرده منو آورده اینجا. سیکتیر!")
         await user_client.delete_dialog(chat_id) 
     except: pass
     return False
@@ -155,7 +149,7 @@ async def security_check(event):
 async def bot_start(event):
     if event.sender_id != ADMIN_ID: return
     conn = "✅ وصل" if user_client.is_connected() and await user_client.is_user_authorized() else "❌ قطع"
-    await event.reply(f"🤖 **استریمر لایو (نسخه فیکس شده)**\nوضعیت: {conn}\n\n🔐 لاگین:\n`/phone +98...` | `/code 12345` | `/password ...` ")
+    await event.reply(f"🤖 **استریمر مستقیم (نسخه فیکس)**\nوضعیت: {conn}\n\n🔐 لاگین:\n`/phone +98...` | `/code 12345` | `/password ...` ")
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def ph(event):
@@ -172,9 +166,9 @@ async def co(event):
     if event.sender_id != ADMIN_ID: return
     try:
         await user_client.sign_in(login_state['phone'], event.pattern_match.group(1).strip(), phone_code_hash=login_state['hash'])
-        await event.reply("✅ لاگین شد.")
+        await event.reply("✅ لاگین یوزربات انجام شد.")
         if not call_py.active_calls: await call_py.start()
-    except SessionPasswordNeededError: await event.reply("⚠️ رمز دوم رو بزن: `/password رمز` ")
+    except SessionPasswordNeededError: await event.reply("⚠️ رمز دوم: `/password ...` ")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
@@ -221,22 +215,21 @@ async def del_h(event):
 # پینگ
 @user_client.on(events.NewMessage(pattern=r'(?i)^/ping'))
 async def ping_h(event):
-    if not await security_check(event): return
+    if not await strict_security_check(event): return
     start = time.time()
     info = await get_system_info()
     ping = round((time.time() - start) * 1000)
     await event.reply(f"🚀 **استریمر آنلاین**\n📶 پینگ: `{ping}ms`\n{info}")
 
-# پخش لایو (بدون لگ)
+# پخش لایو مستقیم
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_h(event):
-    if not await security_check(event): return
+    # اولویت با امنیت: اگر مجاز نباشد، لفت می‌دهد
+    if not await strict_security_check(event): return
     
-    chat_id = event.chat_id
     url_arg = event.pattern_match.group(2)
     final_url = DEFAULT_LIVE_URL
-    
-    status = await event.reply("📡 در حال استقرار استریم ضد لگ...")
+    status = await event.reply("📡 در حال اتصال مستقیم به لایو...")
 
     try:
         if url_arg:
@@ -244,15 +237,15 @@ async def live_h(event):
         else:
             title = "Default Live TV"
 
-        await start_stream_v1(chat_id, final_url)
-        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`\n⚡️ حالت: No-Lag (m3u8 optimized)")
+        await start_stream_v1(event.chat_id, final_url)
+        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`\n⚡️ متصل به لینک مستقیم")
     except Exception as e:
         await status.edit(f"❌ خطا در پخش: `{e}`")
 
 # توقف
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/stop|قطع)'))
 async def stop_h(event):
-    if not await security_check(event): return
+    if not await strict_security_check(event): return
     try:
         await call_py.leave_group_call(event.chat_id)
         gc.collect()
@@ -264,7 +257,7 @@ async def stop_h(event):
 # ==========================================
 async def main():
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Stable Live Streamer Active"))
+    app.router.add_get("/", lambda r: web.Response(text="Stable Streamer Active"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
