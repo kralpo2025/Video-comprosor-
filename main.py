@@ -8,16 +8,16 @@ import shutil
 import time
 import psutil
 import gc
+import random
 from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import MemorySession
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl.types import Channel
+from telethon.tl.types import Channel, Chat, User
 
 # کتابخانه‌های نسخه 1.2.9 (لگاسی)
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
-
 import yt_dlp
 
 # ==========================================
@@ -28,6 +28,7 @@ API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"
 ADMIN_ID = 7419222963
 
+# لینک پیش‌فرض که گفتید دستی کار می‌کند
 DEFAULT_LIVE_URL = "https://fo-live.iraninternational.com/out/v1/ad74279027874747805d7621c5484828/index.m3u8"
 AUTH_FILE = "allowed_chats.json"
 PORT = int(os.environ.get("PORT", 8080))
@@ -38,15 +39,15 @@ logger = logging.getLogger("LegacyStreamer")
 login_state = {}
 
 # ==========================================
-# 🔐 مدیریت لیست مجاز (Strict Security)
+# 🔐 مدیریت لیست مجاز
 # ==========================================
 def load_allowed_chats():
-    if not os.path.exists(AUTH_FILE): return []
+    if not os.path.exists(AUTH_FILE): return [ADMIN_ID]
     try:
         with open(AUTH_FILE, 'r') as f:
             data = json.load(f)
             return [int(i) for i in data]
-    except: return []
+    except: return [ADMIN_ID]
 
 def save_allowed_chats(chat_list):
     with open(AUTH_FILE, 'w') as f:
@@ -55,7 +56,7 @@ def save_allowed_chats(chat_list):
 ALLOWED_CHATS = load_allowed_chats()
 
 # ==========================================
-# 🛠 نصب FFmpeg (کد تضمینی شما)
+# 🛠 نصب FFmpeg (کد تضمینی)
 # ==========================================
 def setup_ffmpeg():
     cwd = os.getcwd()
@@ -92,11 +93,7 @@ async def get_system_info():
     return f"🧠 RAM: {mem.percent}%\n💾 Disk: {disk.percent}%\n🖥 CPU: {cpu}%"
 
 async def get_stream_link(url):
-    ydl_opts = {
-        'format': 'best', 
-        'noplaylist': True, 
-        'quiet': True
-    }
+    ydl_opts = {'format': 'best', 'noplaylist': True, 'quiet': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -104,61 +101,74 @@ async def get_stream_link(url):
     except: return url, "Live Stream"
 
 async def start_stream_v1(chat_id, source):
-    """استریم مستقیم بدون بهینه‌سازی اضافی (طبق درخواست)"""
     if not call_py.active_calls:
         try: await call_py.start()
         except: pass
-
-    # استفاده از تنظیمات مستقیم بدون فلگ‌های اضافی FFmpeg
+    
+    # پخش مستقیم بدون دستکاری (طبق درخواست شما برای سرعت بیشتر)
     stream = MediaStream(
         source,
         audio_parameters=AudioQuality.MEDIUM, 
         video_parameters=VideoQuality.SD_480p 
     )
 
-    try:
-        try: await call_py.leave_group_call(chat_id)
-        except: pass
-        await asyncio.sleep(1)
-        await call_py.join_group_call(chat_id, stream)
-    except Exception as e:
-        if "no group call" in str(e).lower():
-            raise Exception("⚠️ ویس‌کال بسته است!")
-        raise e
+    try: await call_py.leave_group_call(chat_id)
+    except: pass
+    await asyncio.sleep(1)
+    await call_py.join_group_call(chat_id, stream)
 
 # ==========================================
-# 👮‍♂️ سیستم امنیتی (فقط لیست سفید - وگرنه فحش و لفت)
+# 👮‍♂️ سیستم امنیتی سخت‌گیرانه
 # ==========================================
-async def strict_security_check(event):
+async def security_check(event):
     chat_id = event.chat_id
-    # چک کردن لیست سفید (حتی برای ادمین اصلی)
     if chat_id in ALLOWED_CHATS:
         return True
     
-    # اگر در لیست نبود: فحش و خروج
     try:
-        await event.reply("💢 مرتیکه کسکش! این چت توی لیست سفید من نیست. ادمینت غلط کرده منو آورده اینجا. سیکتیر!")
+        await event.reply("💢 مرتیکه کسکش! این چت مجاز نیست. ادمینت غلط کرده منو آورده اینجا. سیکتیر!")
         await user_client.delete_dialog(chat_id) 
     except: pass
     return False
 
 # ==========================================
-# 🤖 ربات لاگین (Bot)
+# 🤬 آنتی‌مزاحم (فحش در پی‌وی)
+# ==========================================
+@user_client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+async def anti_annoying(event):
+    if event.sender_id == ADMIN_ID: return
+    
+    insults = [
+        "کون ده با تو چیکار داری؟ گمشو از پیوی بیرون.",
+        "مرتیکه جنده زاده، دفعه آخرت باشه به این اکانت پیام میدی.",
+        "سیکتیر کن تا نریدم به هیکلت بی شرف.",
+        "کونی مگه نگفتم اینجا نیای؟ گمشو ننه جنده.",
+        "خایه‌مالو سگ بگاد، برو تا بلاکت نکردم کسکش."
+    ]
+    
+    try:
+        await event.reply(random.choice(insults))
+        await asyncio.sleep(1)
+        # پاک کردن دوطرفه چت
+        await user_client.delete_dialog(event.sender_id, revoke=True)
+    except: pass
+
+# ==========================================
+# 🤖 ربات لاگین (Bot API)
 # ==========================================
 @bot.on(events.NewMessage(pattern='/start'))
 async def bot_start(event):
     if event.sender_id != ADMIN_ID: return
-    conn = "✅ وصل" if user_client.is_connected() and await user_client.is_user_authorized() else "❌ قطع"
-    await event.reply(f"🤖 **استریمر مستقیم (نسخه فیکس)**\nوضعیت: {conn}\n\n🔐 لاگین:\n`/phone +98...` | `/code 12345` | `/password ...` ")
+    await event.reply("🤖 سیستم مدیریت استریم آنلاین است.")
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def ph(event):
     if event.sender_id != ADMIN_ID: return
     try:
-        if not user_client.is_connected(): await user_client.connect()
+        await user_client.connect()
         r = await user_client.send_code_request(event.pattern_match.group(1).strip())
         login_state.update({'phone': event.pattern_match.group(1).strip(), 'hash': r.phone_code_hash})
-        await event.reply("✅ کد فرستاده شد. بزن: `/code 12345`")
+        await event.reply("✅ کد: `/code 12345`")
     except Exception as e: await event.reply(f"❌ {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
@@ -166,35 +176,42 @@ async def co(event):
     if event.sender_id != ADMIN_ID: return
     try:
         await user_client.sign_in(login_state['phone'], event.pattern_match.group(1).strip(), phone_code_hash=login_state['hash'])
-        await event.reply("✅ لاگین یوزربات انجام شد.")
+        await event.reply("✅ یوزربات متصل شد.")
         if not call_py.active_calls: await call_py.start()
     except SessionPasswordNeededError: await event.reply("⚠️ رمز دوم: `/password ...` ")
     except Exception as e: await event.reply(f"❌ {e}")
 
-@bot.on(events.NewMessage(pattern='/password (.+)'))
-async def pa(event):
+# افزودن از طریق ربات با لینک یا ایدی
+@bot.on(events.NewMessage(pattern='/add (.+)'))
+async def bot_add(event):
     if event.sender_id != ADMIN_ID: return
+    target = event.pattern_match.group(1).strip()
     try:
-        await user_client.sign_in(password=event.pattern_match.group(1).strip())
-        await event.reply("✅ ورود کامل شد.")
-        if not call_py.active_calls: await call_py.start()
-    except Exception as e: await event.reply(f"❌ {e}")
+        e = await user_client.get_entity(target)
+        if e.id not in ALLOWED_CHATS:
+            ALLOWED_CHATS.append(e.id)
+            save_allowed_chats(ALLOWED_CHATS)
+            await event.reply(f"✅ چت `{e.id}` مجاز شد.")
+    except Exception as e: await event.reply(f"❌ خطا: {e}")
 
 # ==========================================
 # 👤 هندلرهای یوزربات (Userbot)
 # ==========================================
 
-# افزودن چت (فقط مالک)
+# افزودن در گروه (توسط خود یوزربات)
 @user_client.on(events.NewMessage(pattern=r'(?i)^/add(?:\s+(.+))?'))
-async def add_h(event):
-    if event.sender_id != ADMIN_ID: return
+async def user_add_h(event):
+    # فقط اگر فرستنده ادمین اصلی باشد یا خود یوزربات پیام را داده باشد
+    if event.sender_id != ADMIN_ID and not event.out: return
+    
     target = event.pattern_match.group(1)
     chat_id = event.chat_id
+    
     if target:
         try:
             e = await user_client.get_entity(target)
             chat_id = e.id
-        except: return await event.reply("❌ پیدا نشد.")
+        except: return await event.reply("❌ نامعتبر.")
     
     if chat_id not in ALLOWED_CHATS:
         ALLOWED_CHATS.append(chat_id)
@@ -203,49 +220,57 @@ async def add_h(event):
     else:
         await event.reply("⚠️ در لیست بود.")
 
-# حذف چت
-@user_client.on(events.NewMessage(pattern=r'(?i)^/del'))
-async def del_h(event):
-    if event.sender_id != ADMIN_ID: return
-    if event.chat_id in ALLOWED_CHATS:
-        ALLOWED_CHATS.remove(event.chat_id)
+# حذف چت از لیست سفید
+@user_client.on(events.NewMessage(pattern=r'(?i)^/del(?:\s+(.+))?'))
+async def user_del_h(event):
+    if event.sender_id != ADMIN_ID and not event.out: return
+    target = event.pattern_match.group(1)
+    chat_id = event.chat_id
+    if target:
+        try: chat_id = int(target)
+        except: pass
+    
+    if chat_id in ALLOWED_CHATS:
+        ALLOWED_CHATS.remove(chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply("🗑 حذف شد.")
+        await event.reply(f"🗑 چت `{chat_id}` حذف شد.")
 
 # پینگ
 @user_client.on(events.NewMessage(pattern=r'(?i)^/ping'))
 async def ping_h(event):
-    if not await strict_security_check(event): return
+    if not await security_check(event): return
     start = time.time()
     info = await get_system_info()
     ping = round((time.time() - start) * 1000)
-    await event.reply(f"🚀 **استریمر آنلاین**\n📶 پینگ: `{ping}ms`\n{info}")
+    await event.reply(f"🚀 **Online**\n📶 Ping: `{ping}ms`\n{info}")
 
-# پخش لایو مستقیم
+# لایو (با حذف خودکار لینک)
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_h(event):
-    # اولویت با امنیت: اگر مجاز نباشد، لفت می‌دهد
-    if not await strict_security_check(event): return
+    if not await security_check(event): return
     
     url_arg = event.pattern_match.group(2)
-    final_url = DEFAULT_LIVE_URL
-    status = await event.reply("📡 در حال اتصال مستقیم به لایو...")
+    # اگر لینک نداده بود، از لینک پیش‌فرض استفاده کن و حتماً پردازشش کن
+    final_url = url_arg if url_arg else DEFAULT_LIVE_URL
+    
+    # حذف دستور برای مخفی ماندن لینک از بقیه
+    try: await event.delete()
+    except: pass
+
+    status = await user_client.send_message(event.chat_id, "📡 در حال رندر مستقیم لایو...")
 
     try:
-        if url_arg:
-            final_url, title = await get_stream_link(url_arg)
-        else:
-            title = "Default Live TV"
-
-        await start_stream_v1(event.chat_id, final_url)
-        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`\n⚡️ متصل به لینک مستقیم")
+        # پردازش لینک (چه پیش‌فرض چه ارسالی)
+        u, t = await get_stream_link(final_url)
+        await start_stream_v1(event.chat_id, u)
+        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{t}`\n⚡️ اتصال مستقیم")
     except Exception as e:
-        await status.edit(f"❌ خطا در پخش: `{e}`")
+        await status.edit(f"❌ خطا: {e}")
 
 # توقف
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/stop|قطع)'))
 async def stop_h(event):
-    if not await strict_security_check(event): return
+    if not await security_check(event): return
     try:
         await call_py.leave_group_call(event.chat_id)
         gc.collect()
