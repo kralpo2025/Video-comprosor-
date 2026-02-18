@@ -24,12 +24,13 @@ API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"
 ADMIN_ID = 7419222963
 
-DEFAULT_LIVE_URL = "https://dev-live.livetvstream.co.uk/LS-63503-4/index.m3u8"
+# لینک پیش‌فرض (مثلاً ایران اینترنشنال یا هر لینک m3u8 معتبر)
+DEFAULT_LIVE_URL = "https://fo-live.iraninternational.com/out/v1/ad74279027874747805d7621c5484828/index.m3u8"
 AUTH_FILE = "allowed_chats.json"
 PORT = int(os.environ.get("PORT", 8080))
 
-logging.basicConfig(level=logging.ERROR) # فقط خطاهای بحرانی
-logger = logging.getLogger("LiveStreamer")
+logging.basicConfig(level=logging.ERROR)
+logger = logging.getLogger("UltraStreamer")
 
 login_state = {}
 
@@ -70,13 +71,14 @@ async def force_cleanup():
     gc.collect()
 
 # ==========================================
-# 📡 هسته استریم (بدون لگ و بافرینگ)
+# 📡 هسته استریم (رفع مشکل صفحه سبز و صدا)
 # ==========================================
 async def get_stream_link(url):
     ydl_opts = {
-        'format': 'best[height<=360]/best', 
+        'format': 'best[height<=480]/best', 
         'noplaylist': True, 
-        'quiet': True
+        'quiet': True,
+        'no_warnings': True
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -85,44 +87,47 @@ async def get_stream_link(url):
     except: return url, "Live Stream"
 
 async def start_stream_v1(chat_id, source):
-    """جوین شدن به ویس‌کال و شروع استریم"""
     if not call_py.active_calls:
         try: await call_py.start()
         except: pass
 
-    # حذف -re برای لینک‌های شبکه (HLS) چون باعث لگ و تق‌تق می‌شود
-    # استفاده از پارامترهای بهینه برای پخش آنی
-    ffmpeg_args = "-preset ultrafast -tune zerolatency -threads 2 -sn -dn"
+    # --- تنظیمات فوق حرفه‌ای برای رفع صفحه سبز و نبود صدا ---
+    # pix_fmt yuv420p: حیاتی برای نمایش در تلگرام
+    # c:a aac: کدک استاندارد صدا برای ویس‌کال
+    # b:a 64k: بیت‌ریت بهینه برای جلوگیری از تق‌تق
+    ffmpeg_args = (
+        "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+        "-vcodec libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency "
+        "-acodec aac -b:a 64k -ac 2 -ar 44100"
+    )
     
     stream = MediaStream(
         source,
-        audio_parameters=AudioQuality.MEDIUM, # مدیوم بهترین تعادل برای جلوگیری از تق‌تق است
+        audio_parameters=AudioQuality.MEDIUM,
         video_parameters=VideoQuality.SD_480p,
         ffmpeg_parameters=ffmpeg_args
     )
 
-    # اول تلاش برای خروج از تماس قبلی (اگر وجود داشت)
     try: await call_py.leave_group_call(chat_id)
     except: pass
-    await asyncio.sleep(1)
+    await asyncio.sleep(1.5)
     
-    # جوین شدن اصلی
+    # جوین شدن
     await call_py.join_group_call(chat_id, stream)
 
 # ==========================================
-# 👮‍♂️ سیستم امنیتی (اخراج حتمی غیرمجازها)
+# 👮‍♂️ سیستم امنیتی سخت‌گیرانه (حتی برای ادمین)
 # ==========================================
 async def security_check(event):
     chat_id = event.chat_id
     if chat_id in ALLOWED_CHATS:
         return True
     
-    # طبق دستور شما: حتی برای ادمین هم اگر مجاز نباشد، فوش و لفت!
+    # فحش و لفت (طبق درخواست شما)
     try:
-        await event.reply("💢 این چت توی لیست سفید من نیست! ادمینت غلط کرده منو اینجا ادد کرده. لفت میدم سیکتیر!")
+        await event.reply("💢 مرتیکه اسکل! این چت توی لیست سفید من نیست. ادمینت غلط کرده منو آورده اینجا. سیکتیر!")
         await user_client.delete_dialog(chat_id) 
-    except Exception as e:
-        print(f"Error leaving: {e}")
+    except: pass
     return False
 
 # ==========================================
@@ -132,7 +137,7 @@ async def security_check(event):
 async def bot_start(event):
     if event.sender_id != ADMIN_ID: return
     status = "✅ وصل" if user_client.is_connected() and await user_client.is_user_authorized() else "❌ قطع"
-    await event.reply(f"🤖 **مدیریت استریم (نسخه فیکس)**\nوضعیت یوزربات: {status}\n\n🔐 راهنمای لاگین:\n1. `/phone +989...` \n2. `/code 12345` \n3. `/password ...` ")
+    await event.reply(f"🤖 **استریمر فوق روان (نسخه فیکس)**\nوضعیت: {status}\n\n🔐 لاگین:\n`/phone +98...` | `/code 12345` | `/password ...` ")
 
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def ph(event):
@@ -142,7 +147,7 @@ async def ph(event):
         if not user_client.is_connected(): await user_client.connect()
         res = await user_client.send_code_request(phone)
         login_state.update({'phone': phone, 'hash': res.phone_code_hash})
-        await event.reply("✅ کد فرستاده شد. حالا بزن: `/code 12345`")
+        await event.reply("✅ کد فرستاده شد. بزن: `/code 12345`")
     except Exception as e: await event.reply(f"❌ خطا: {e}")
 
 @bot.on(events.NewMessage(pattern='/code (.+)'))
@@ -151,10 +156,10 @@ async def co(event):
     code = event.pattern_match.group(1).strip()
     try:
         await user_client.sign_in(login_state['phone'], code, phone_code_hash=login_state['hash'])
-        await event.reply("✅ لاگین شد! یوزربات آماده است.")
+        await event.reply("✅ یوزربات متصل شد.")
         if not call_py.active_calls: await call_py.start()
     except SessionPasswordNeededError:
-        await event.reply("⚠️ تایید دو مرحله‌ای فعاله. بزن: `/password رمز` ")
+        await event.reply("⚠️ رمز دوم رو بزن: `/password ...` ")
     except Exception as e: await event.reply(f"❌ خطا: {e}")
 
 @bot.on(events.NewMessage(pattern='/password (.+)'))
@@ -163,7 +168,7 @@ async def pa(event):
     pwd = event.pattern_match.group(1).strip()
     try:
         await user_client.sign_in(password=pwd)
-        await event.reply("✅ وارد شدید.")
+        await event.reply("✅ لاگین کامل شد.")
         if not call_py.active_calls: await call_py.start()
     except Exception as e: await event.reply(f"❌ خطا: {e}")
 
@@ -180,14 +185,14 @@ async def add_chat(event):
         try:
             e = await user_client.get_entity(target)
             chat_id = e.id
-        except: return await event.reply("❌ پیدا نشد.")
+        except: return await event.reply("❌ یافت نشد.")
     
     if chat_id not in ALLOWED_CHATS:
         ALLOWED_CHATS.append(chat_id)
         save_allowed_chats(ALLOWED_CHATS)
         await event.reply(f"✅ چت `{chat_id}` مجاز شد.")
     else:
-        await event.reply("⚠️ در لیست بود.")
+        await event.reply("⚠️ قبلاً مجاز بود.")
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^/del'))
 async def del_chat(event):
@@ -195,7 +200,7 @@ async def del_chat(event):
     if event.chat_id in ALLOWED_CHATS:
         ALLOWED_CHATS.remove(event.chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply("🗑 حذف شد.")
+        await event.reply("🗑 از لیست سفید حذف شد.")
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^/ping'))
 async def ping_cmd(event):
@@ -203,35 +208,28 @@ async def ping_cmd(event):
     start = time.time()
     info = await get_system_info()
     ping = round((time.time() - start) * 1000)
-    await event.reply(f"📶 **وضعیت**\nپینگ: `{ping}ms`\n{info}")
+    await event.reply(f"📶 **وضعیت استریم**\nتاخیر: `{ping}ms`\n{info}")
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_cmd(event):
-    # چک کردن امنیت قبل از هر کاری
     if not await security_check(event): return
     
     url_arg = event.pattern_match.group(2)
     final_url = DEFAULT_LIVE_URL
-    status = await event.reply("📡 در حال اتصال...")
+    status = await event.reply("📡 در حال استقرار استریم... (رفع لگ و صفحه سبز)")
     
     try:
-        # استخراج لینک لایو
         if url_arg:
             final_url, title = await get_stream_link(url_arg)
         else:
-            title = "Default Live"
+            title = "Fixed Live TV"
 
-        # تلاش برای جوین شدن و پخش (بخش بحرانی)
+        # شروع فرآیند جوین
         await start_stream_v1(event.chat_id, final_url)
         
-        # اگر تا اینجا خطا نداد، یعنی جوین شده
-        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`\n⚡️ بدون لگ (Zerolatency)")
+        await status.edit(f"🔴 **پخش زنده با موفقیت فعال شد**\n📺 `{title}`\n⚡️ حالت: Ultra Stable (AAC + YUV420p)")
     except Exception as e:
-        error_msg = str(e)
-        if "no group call" in error_msg.lower():
-            await status.edit("⚠️ **خطا:** ویس‌کال گروه باز نیست!")
-        else:
-            await status.edit(f"❌ **خطا در اتصال:**\n`{error_msg}`")
+        await status.edit(f"❌ خطا در پخش: `{e}`")
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/stop|قطع)'))
 async def stop_cmd(event):
@@ -239,7 +237,7 @@ async def stop_cmd(event):
     try:
         await call_py.leave_group_call(event.chat_id)
         await force_cleanup()
-        await event.reply("⏹ متوقف شد.")
+        await event.reply("⏹ استریم متوقف شد.")
     except: pass
 
 # ==========================================
@@ -247,7 +245,7 @@ async def stop_cmd(event):
 # ==========================================
 async def main():
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Running..."))
+    app.router.add_get("/", lambda r: web.Response(text="Stable Streamer Active"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
@@ -259,7 +257,7 @@ async def main():
             if not call_py.active_calls: await call_py.start()
     except: pass
     
-    print("🚀 Bot is LIVE and Secure!")
+    print("🚀 Fixed Streamer is Running!")
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
