@@ -29,7 +29,7 @@ BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"
 ADMIN_ID = 7419222963
 
 # لینک پیش‌فرض که در صورت نبود لینک در دستور پخش می‌شود
-DEFAULT_LIVE_URL = "https://dev-live.livetvstream.co.uk/LS-63503-4/index.m3u8"
+DEFAULT_LIVE_URL = "https://iran.kralp.workers.dev/https://dev-live.livetvstream.co.uk/LS-63503-4/index.m3u8"
 AUTH_FILE = "allowed_chats.json"
 PORT = int(os.environ.get("PORT", 8080))
 
