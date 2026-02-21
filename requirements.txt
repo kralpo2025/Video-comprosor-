@@ -1,5 +1,5 @@
 Telethon==1.32.1
-pytgcalls>=3.0.0
+pytgcalls==3.0.0.dev24
 ntgcalls
 aiohttp
 wget
