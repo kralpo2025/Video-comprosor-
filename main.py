@@ -9,17 +9,16 @@ import time
 import psutil
 import gc
 import random
+import glob
 from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import MemorySession
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl.types import Channel, Chat, User
 from telethon.tl.functions.channels import GetParticipantRequest
 
-# استفاده از نسخه 1.2.9 با متدهای پایدار (AudioVideoPiped)
+# استفاده از کلاس‌های صحیح، پایدار و تست شده برای نسخه 1.2.9
 from pytgcalls import PyTgCalls
-from pytgcalls.types.input_stream import AudioVideoPiped, AudioPiped
-from pytgcalls.types.input_stream.quality import HighQualityAudio, MediumQualityAudio, LowQualityVideo
+from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
 
 import yt_dlp
 
@@ -31,15 +30,16 @@ API_HASH = "bdd2e8fccf95c9d7f3beeeff045f8df4"
 BOT_TOKEN = "8149847784:AAEvF5GSrzyxyO00lw866qusfRjc4HakwfA"  
 ADMIN_ID = 7419222963
 
-# لینک پیش‌فرض که در صورت نبود لینک در دستور پخش می‌شود
+# لینک پیش‌فرض شبکه ایران اینترنشنال
 DEFAULT_LIVE_URL = "https://iran.kralp.workers.dev/https://dev-live.livetvstream.co.uk/LS-63503-4/index.m3u8"
 AUTH_FILE = "allowed_chats.json"
 PORT = int(os.environ.get("PORT", 8080))
 
 logging.basicConfig(level=logging.ERROR)
-logger = logging.getLogger("LegacyStreamer")
+logger = logging.getLogger("StableStreamer")
 
 login_state = {}
+current_playing = {} # برای ذخیره وضعیت فعلی پخش
 
 # ==========================================
 # 🔐 مدیریت لیست مجاز
@@ -88,7 +88,7 @@ user_client = TelegramClient('user_session', API_ID, API_HASH)
 call_py = PyTgCalls(user_client)
 
 # ==========================================
-# 📊 توابع کمکی و استخراج لینک (آسنکرون برای رفع لگ و تق‌تق)
+# 📊 توابع کمکی (استخراج لینک آسنکرون برای رفع تق‌تق صدا)
 # ==========================================
 async def get_system_info():
     mem = psutil.virtual_memory()
@@ -97,8 +97,9 @@ async def get_system_info():
     return f"🧠 RAM: {mem.percent}%\n💾 Disk: {disk.percent}%\n🖥 CPU: {cpu}%"
 
 def extract_info_sync(url):
+    # تنظیم روی 360p برای جلوگیری از لگ روی سرور رایگان Render
     ydl_opts = {
-        'format': 'best[height<=480]/best', # محدود کردن رزولوشن برای جلوگیری از لگ سرور رایگان
+        'format': 'best[height<=360]/best', 
         'noplaylist': True, 
         'quiet': True,
         'geo_bypass': True
@@ -108,7 +109,6 @@ def extract_info_sync(url):
 
 async def get_stream_link(url):
     try:
-        # اجرای yt-dlp در ترد جداگانه (جلوگیری کامل از فریز شدن ربات هنگام استخراج لینک)
         info = await asyncio.to_thread(extract_info_sync, url)
         return info.get('url'), info.get('title', 'Live Stream')
     except Exception as e:
@@ -116,7 +116,7 @@ async def get_stream_link(url):
         return url, "Live Stream"
 
 # ==========================================
-# 👮‍♂️ سیستم امنیتی (بررسی ادمین بودن + لیست سفید)
+# 👮‍♂️ سیستم امنیتی (بررسی ادمین بودن)
 # ==========================================
 async def is_admin(event):
     if event.sender_id == ADMIN_ID:
@@ -156,13 +156,14 @@ async def anti_annoying(event):
         "اگه بسیجی هستی که مادرتو سگ بگاد، کونی مگه نگفتم اینجا نیا؟",
         "جیره‌خور نظام آخوندی، سیکتیر کن تا بلاکت نکردم کسکش.",
         "آخوند پرست صیغه‌ای، دفعه آخرت باشه به این اکانت پیام میدی.",
-        "خایه‌مالو سگ بگاد، برو ساندیس‌تو بخور کونی."
+        "خایه‌مالو سگ بگاد، برو ساندیس‌تو بخور کونی.",
+        "بسیجی مادرجنده، برو گمشو تو سوراخ موشت تا ننتو نگاییدم."
     ]
     
     try:
         await event.reply(random.choice(insults))
-        await asyncio.sleep(8)
-        # پاک کردن دوطرفه پیام‌ها
+        await asyncio.sleep(5)
+        # پاک کردن دوطرفه پیام‌ها برای جلوگیری از اسپم
         await user_client.delete_dialog(event.sender_id, revoke=True)
     except: pass
 
@@ -179,29 +180,31 @@ async def bot_start(event):
         status_text = f"🟢 **آنلاین**\n👤 اکانت متصل: `{me.first_name}`"
 
     help_text = f"""
-🤖 **سیستم مدیریت استریم و لایو**
+🤖 **سیستم مدیریت پیشرفته استریم**
 
 وضعیت یوزربات: {status_text}
 
-📋 **لیست دستورات ربات (همینجا):**
-🔸 `/phone [شماره]` : ارسال کد ورود
+📋 **لیست دستورات ربات لاگین (همینجا):**
+🔸 `/phone [شماره]` : ارسال کد ورود به اکانت
 🔸 `/code [کد]` : تایید کد ورود
 🔸 `/password [رمز]` : وارد کردن رمز دو مرحله‌ای
-🔸 `/add [لینک/آیدی]` : مجاز کردن یک گروه برای پخش
+🔸 `/add [لینک/آیدی]` : مجاز کردن یک گروه برای پخش از راه دور
 
-🛠 **دستورات قابل استفاده در گروه‌ها (توسط یوزربات):**
+🛠 **دستورات قابل استفاده در گروه‌ها (توسط ادمین‌ها و شما):**
 🔹 `/add` : مجاز کردن گروه فعلی
-🔹 `/del` : حذف گروه فعلی
+🔹 `/del` : حذف گروه فعلی از مجازها
 🔹 `/live` یا `لایو` : پخش زنده شبکه ایران اینترنشنال
 🔹 `/live [لینک]` یا `لایو [لینک]` : پخش استریم یا فیلم از لینک
-🔹 `/play` یا `پخش` : **(ریپلای روی آهنگ/ویدیو)** پخش فایل
-🔹 `/stop` یا `قطع` : توقف و خروج
-🔹 `/pause` یا `توقف موقت` : متوقف کردن موقت
+🔹 `/play` یا `پخش` : **(ریپلای روی آهنگ/ویدیو)** پخش فایل در ویسکال
+🔹 `/stop` یا `قطع` : توقف کامل و خروج از ویسکال
+🔹 `/pause` یا `توقف موقت` : متوقف کردن موقت پخش
 🔹 `/resume` یا `ادامه` : ادامه پخش
-🔹 `/mute` یا `بی صدا` : قطع صدای ربات
+🔹 `/mute` یا `بی صدا` : قطع صدای ربات در ویسکال
 🔹 `/unmute` یا `صدا دار` : وصل صدای ربات
 🔹 `/volume [1-200]` : تنظیم بلندی صدا
-🔹 `/ping` : تست سرعت
+🔹 `/status` یا `/وضعیت` : نمایش اطلاعات فایل/لایو در حال پخش
+🔹 `/clearcache` یا `/پاکسازی` : حذف فایل‌های دانلودی برای رفع هنگی سرور
+🔹 `/ping` : تست سرعت اتصال یوزربات
 """
     await event.reply(help_text)
 
@@ -253,7 +256,7 @@ async def bot_add_h(event):
     except Exception as e: await event.reply(f"❌ پیدا نشد: {e}")
 
 # ==========================================
-# 👤 هندلرهای یوزربات (Userbot)
+# 👤 هندلرهای یوزربات در گروه‌ها
 # ==========================================
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^/add(?:\s+(.+))?'))
@@ -265,12 +268,12 @@ async def user_add_h(event):
         try:
             e = await user_client.get_entity(target)
             chat_id = e.id
-        except: return await event.reply("❌ نامعتبر.")
+        except: return await event.reply("❌ گروه یا چت نامعتبر.")
     
     if chat_id not in ALLOWED_CHATS:
         ALLOWED_CHATS.append(chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply(f"✅ چت `{chat_id}` مجاز شد.")
+        await event.reply(f"✅ این گروه (`{chat_id}`) به لیست مجاز اضافه شد.")
     else:
         await event.reply("⚠️ قبلاً مجاز بود.")
 
@@ -290,9 +293,9 @@ async def user_del_h(event):
     if chat_id in ALLOWED_CHATS:
         ALLOWED_CHATS.remove(chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply(f"🗑 چت `{chat_id}` حذف شد.")
+        await event.reply(f"🗑 گروه `{chat_id}` از لیست مجاز حذف شد.")
 
-# پینگ بهینه شده (نمایش زمان واقعی)
+# پینگ بهینه شده (درخواست واقعی به سرور تلگرام برای گرفتن تاخیر دقیق)
 @user_client.on(events.NewMessage(pattern=r'(?i)^/ping'))
 async def ping_h(event):
     if not await security_check(event): return
@@ -300,9 +303,9 @@ async def ping_h(event):
     await user_client.get_me() 
     ping = round((time.time() - start) * 1000)
     info = await get_system_info()
-    await event.reply(f"🚀 **ربات آنلاین و پایدار است**\n📶 Ping: `{ping}ms`\n\n{info}")
+    await event.reply(f"🚀 **ربات با سرعت عالی در حال اجراست**\n📶 Ping: `{ping}ms`\n\n{info}")
 
-# پخش لایو (با استفاده از AudioVideoPiped پایدار 1.2.9)
+# لایو (بدون لگ با رزولوشن 360p و پردازش آسنکرون)
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_h(event):
     if not await security_check(event): return
@@ -313,7 +316,7 @@ async def live_h(event):
     try: await event.delete()
     except: pass
 
-    status = await user_client.send_message(event.chat_id, "📡 در حال اتصال به استریم... لطفاً صبور باشید☆")
+    status = await user_client.send_message(event.chat_id, "📡 در حال اتصال به استریم و بهینه‌سازی کیفیت... لطفاً صبور باشید☆")
 
     try:
         stream_url, title = await get_stream_link(url_to_play)
@@ -322,61 +325,95 @@ async def live_h(event):
             try: await call_py.start()
             except: pass
 
-        # استفاده از تنظیمات پایدار برای جلوگیری از فریز شدن (مخصوص 1.2.9)
-        stream = AudioVideoPiped(
+        # استفاده از MediaStream برای نسخه 1.2.9
+        stream = MediaStream(
             stream_url,
-            HighQualityAudio(),
-            LowQualityVideo()
+            audio_parameters=AudioQuality.MEDIUM, 
+            video_parameters=VideoQuality.SD_360p # تغییر به 360 برای جلوگیری از لگ سرور رایگان
         )
 
         try: await call_py.leave_group_call(event.chat_id)
         except: pass
         await asyncio.sleep(1)
-        await call_py.join_group_call(event.chat_id, stream)
         
-        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`\n⚡️ کیفیت بهینه شده بدون لگ")
+        await call_py.join_group_call(event.chat_id, stream)
+        current_playing[event.chat_id] = f"🔴 لایو: {title}"
+        
+        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`\n⚡️ کیفیت پردازش روی بهینه‌ترین حالت تنظیم شد.")
     except Exception as e:
-        await status.edit(f"❌ خطا: {e}")
+        await status.edit(f"❌ خطا در اتصال به استریم: {e}")
 
-# قابلیت پخش موزیک/ویدیو از فایل (ریپلای)
+# قابلیت جدید: پخش موزیک/ویدیو از فایل با ریپلای
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/play|پخش)$'))
 async def play_h(event):
     if not await security_check(event): return
     reply = await event.get_reply_message()
     if not reply or not (reply.audio or reply.video or reply.voice or getattr(reply, 'document', None)):
-        return await event.reply("⚠️ لطفاً روی یک آهنگ، ویس یا ویدیو ریپلای کنید و بنویسید پخش.")
+        return await event.reply("⚠️ لطفاً روی یک آهنگ، ویس یا ویدیو ریپلای کنید و کلمه «پخش» یا «/play» را بفرستید.")
 
-    msg = await event.reply("📥 در حال دانلود و آماده‌سازی فایل برای پخش (بدون تق‌تق)...")
+    msg = await event.reply("📥 در حال دانلود و آماده‌سازی فایل روی سرور (برای جلوگیری از تق‌تق صدا)...")
     
     try:
+        # دانلود فایل در سرور
         file_path = await reply.download_media()
+        file_name = reply.file.name if reply.file and hasattr(reply.file, 'name') else "فایل مدیا"
         
         if not call_py.active_calls:
             try: await call_py.start()
             except: pass
 
+        # اگر ویدیو باشه، هم تصویر داره هم صدا
         if reply.video or str(file_path).endswith(('.mp4', '.mkv', '.avi')):
-            stream = AudioVideoPiped(file_path, HighQualityAudio(), LowQualityVideo())
+            stream = MediaStream(file_path, audio_parameters=AudioQuality.MEDIUM, video_parameters=VideoQuality.SD_360p)
         else:
-            # فقط فایل صوتی
-            stream = AudioPiped(file_path, HighQualityAudio())
+            # اگر فقط صدا باشه
+            stream = MediaStream(file_path, audio_parameters=AudioQuality.HIGH)
 
         try: await call_py.leave_group_call(event.chat_id)
         except: pass
         await asyncio.sleep(1)
         
         await call_py.join_group_call(event.chat_id, stream)
-        await msg.edit("✅ **پخش رسانه در ویسکال آغاز شد!** 🎶")
+        current_playing[event.chat_id] = f"🎵 در حال پخش: {file_name}"
+        await msg.edit(f"✅ **پخش رسانه آغاز شد!** 🎶\nنام فایل: `{file_name}`")
     except Exception as e:
         await msg.edit(f"❌ خطا در پردازش یا پخش رسانه: {e}")
 
+# ==========================================
+# قابلیت‌های جدید اضافه شده به درخواست شما
+# ==========================================
+
+# 1. وضعیت پخش فعلی
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/status|/وضعیت)'))
+async def status_h(event):
+    if not await security_check(event): return
+    now_playing = current_playing.get(event.chat_id, "هیچ چیزی در حال پخش نیست.")
+    await event.reply(f"📻 **وضعیت ویسکال گروه:**\n{now_playing}")
+
+# 2. پاکسازی کش (بسیار مهم برای سرورهای رایگان)
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/clearcache|/پاکسازی)'))
+async def clear_cache_h(event):
+    if not await security_check(event): return
+    msg = await event.reply("🧹 در حال پاکسازی فایل‌های اضافه از روی سرور...")
+    count = 0
+    # پاک کردن تمام فایل‌های دانلودی آهنگ و ویدیو
+    for ext in ['*.mp3', '*.mp4', '*.ogg', '*.m4a', '*.avi', '*.mkv']:
+        for file in glob.glob(ext):
+            try:
+                os.remove(file)
+                count += 1
+            except: pass
+    await msg.edit(f"✅ پاکسازی انجام شد!\nتعداد `{count}` فایل از حافظه سرور حذف شد تا سرعت ربات بالا بماند.")
+
+# ==========================================
 # قابلیت‌های مدیریت ویسکال
+# ==========================================
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/pause|توقف موقت)'))
 async def pause_h(event):
     if not await security_check(event): return
     try:
         await call_py.pause_stream(event.chat_id)
-        await event.reply("⏸ پخش موقتاً متوقف شد.")
+        await event.reply("⏸ پخش موقتاً متوقف شد. (برای ادامه بنویسید /resume)")
     except Exception as e: await event.reply(f"❌ خطا: {e}")
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/resume|ادامه)'))
@@ -419,7 +456,9 @@ async def stop_h(event):
     if not await security_check(event): return
     try:
         await call_py.leave_group_call(event.chat_id)
-        gc.collect()
+        if event.chat_id in current_playing:
+            del current_playing[event.chat_id]
+        gc.collect() # خالی کردن رم
         await event.reply("⏹ استریم قطع و ربات از ویسکال خارج شد. روز خوبی داشته باشید♡.")
     except Exception as e: await event.reply(f"❌ خطا: {e}")
 
@@ -434,6 +473,7 @@ async def main():
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     
     print("🚀 Starting...")
+    # توکن مستقیماً درون کد لود شد
     await bot.start(bot_token=BOT_TOKEN)
     try:
         await user_client.connect()
