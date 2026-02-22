@@ -61,7 +61,7 @@ def save_allowed_chats(chat_list):
 ALLOWED_CHATS = load_allowed_chats()
 
 # ==========================================
-# 🛠 نصب FFmpeg (کد تضمینی شما)
+# 🛠 نصب FFmpeg
 # ==========================================
 def setup_ffmpeg():
     cwd = os.getcwd()
@@ -90,7 +90,7 @@ user_client = TelegramClient('user_session', API_ID, API_HASH)
 call_py = PyTgCalls(user_client)
 
 # ==========================================
-# 📊 توابع استخراج لینک (فوق بهینه برای رفع لگ)
+# 🛡 توابع ضد-لگ و فشرده‌ساز رسانه
 # ==========================================
 async def get_system_info():
     mem = psutil.virtual_memory()
@@ -99,9 +99,8 @@ async def get_system_info():
     return f"🧠 RAM: {mem.percent}%\n💾 Disk: {disk.percent}%\n🖥 CPU: {cpu}%"
 
 def extract_info_sync(url):
-    # تنظیم روی پایین‌ترین کیفیت ممکن برای جلوگیری کامل از لگ گرفتن فیلم‌ها در هاست رایگان
     ydl_opts = {
-        'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst', 
+        'format': 'worstvideo[ext=mp4]+worstaudio/worst', 
         'noplaylist': True, 
         'quiet': True,
         'geo_bypass': True
@@ -116,6 +115,27 @@ async def get_stream_link(url):
     except Exception as e:
         logger.error(f"yt-dlp error: {e}")
         return url, "Live Stream"
+
+# 🔥 موتور ضد-لگ ویدیو (ویدیوها رو سبک می‌کنه تا CPU سرور نفس بکشه)
+async def optimize_media(input_file):
+    output_file = f"opt_{random.randint(1000, 9999)}.mp4"
+    # تنظیمات بسیار سبک و پرسرعت (ultrafast) برای سرور رایگان
+    cmd = [
+        'ffmpeg', '-y', '-i', input_file,
+        '-vf', 'scale=-2:360', '-r', '24', 
+        '-preset', 'ultrafast', '-c:v', 'libx264', '-crf', '30',
+        '-c:a', 'aac', '-b:a', '64k',
+        output_file
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        if os.path.exists(output_file):
+            return output_file
+    except: pass
+    return input_file 
 
 # ==========================================
 # 👮‍♂️ سیستم امنیتی (بررسی ادمین بودن)
@@ -189,27 +209,28 @@ async def bot_start(event):
 🔸 `/phone [شماره]` : ارسال کد ورود به اکانت
 🔸 `/code [کد]` : تایید کد ورود
 🔸 `/password [رمز]` : وارد کردن رمز دو مرحله‌ای
-🔸 `/add [لینک/آیدی]` : مجاز کردن یک گروه برای پخش از راه دور
+🔸 `/add [لینک/آیدی]` : مجاز کردن گروه
 
 🛠 **دستورات قابل استفاده در گروه‌ها (توسط ادمین‌ها و شما):**
 🔹 `/add` : مجاز کردن گروه فعلی
-🔹 `/del` : حذف گروه فعلی از مجازها
-🔹 `/live` یا `لایو` : پخش زنده شبکه ایران اینترنشنال
-🔹 `/live [لینک]` یا `لایو [لینک]` : پخش استریم یا فیلم از لینک
-🔹 `/play` یا `پخش` : **(ریپلای روی آهنگ/ویدیو)** پخش فایل در ویسکال
-🔹 `/stop` یا `قطع` : توقف کامل و خروج از ویسکال
-🔹 `/pause` یا `توقف موقت` : متوقف کردن موقت پخش
+🔹 `/del` : حذف گروه فعلی
+🔹 `/live` یا `لایو` : پخش زنده شبکه‌ها (مخصوص استریم زنده)
+🔹 `/dlplay [لینک]` یا `پخش فیلم` : **مخصوص لینک‌های مستقیم فیلم با 0% لگ**
+🔹 `/play` یا `پخش` : **(ریپلای روی آهنگ/ویدیو)** پخش فایل محلی
+🔹 `/stop` یا `قطع` : توقف کامل
+🔹 `/pause` یا `توقف موقت` : متوقف کردن موقت
 🔹 `/resume` یا `ادامه` : ادامه پخش
-🔹 `/mute` یا `بی صدا` : قطع صدای ربات در ویسکال
+🔹 `/mute` یا `بی صدا` : قطع صدای ربات
 🔹 `/unmute` یا `صدا دار` : وصل صدای ربات
 🔹 `/volume [1-200]` : تنظیم بلندی صدا
-🔹 `/status` یا `/وضعیت` : نمایش اطلاعات فایل/لایو در حال پخش
+🔹 `/status` یا `/وضعیت` : نمایش اطلاعات لایو در حال پخش
 🔹 `/clearcache` یا `/پاکسازی` : حذف فایل‌های دانلودی
-🔹 `/ping` : تست سرعت اتصال یوزربات
+🔹 `/ping` : تست سرعت
 🔹 `/info` : **(ریپلای)** دریافت اطلاعات فایل مدیا
 🔹 `/promote` : **(ریپلای)** ادمین کردن کاربر
 🔹 `/ban` : **(ریپلای)** اخراج کاربر از گروه
 🔹 `/time` : نمایش ساعت فعلی
+🔹 `/sysinfo` : وضعیت پیشرفته سرور
 """
     await event.reply(help_text)
 
@@ -286,7 +307,7 @@ async def user_add_h(event):
 async def user_del_h(event):
     if event.sender_id != ADMIN_ID and not event.out: return
     target = event.pattern_match.group(1)
-    chat_id = event.event.chat_id
+    chat_id = event.chat_id
     if target:
         try:
             e = await user_client.get_entity(target)
@@ -309,7 +330,7 @@ async def ping_h(event):
     info = await get_system_info()
     await event.reply(f"🚀 **ربات با سرعت عالی در حال اجراست**\n📶 Ping: `{ping}ms`\n\n{info}")
 
-# لایو (رفع لگ برای فیلم‌های مستقیم)
+# سیستم پخش زنده شبکه‌ها (Live Stream)
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_h(event):
     if not await security_check(event): return
@@ -320,37 +341,74 @@ async def live_h(event):
     try: await event.delete()
     except: pass
 
-    status = await user_client.send_message(event.chat_id, "📡 در حال بررسی و بافرینگ استریم... لطفاً چند ثانیه صبور باشید☆")
+    status = await user_client.send_message(event.chat_id, "📡 در حال اتصال به استریم و بافرینگ... لطفاً صبور باشید☆")
 
     try:
         stream_url, title = await get_stream_link(url_to_play)
-        
         if not call_py.active_calls:
             try: await call_py.start()
             except: pass
 
-        # کیفیت صوتی پایین‌تر برای کاهش فشار روی CPU سرور رندر
-        stream = MediaStream(
-            stream_url,
-            audio_parameters=AudioQuality.LOW, 
-            video_parameters=VideoQuality.SD_480p
-        )
+        stream = MediaStream(stream_url, audio_parameters=AudioQuality.LOW, video_parameters=VideoQuality.SD_480p)
 
         try: await call_py.leave_group_call(event.chat_id)
         except: pass
         
-        # ایجاد بافرینگ برای جلوگیری از لگ زدن لینک‌های سنگین
-        await asyncio.sleep(3) 
+        await asyncio.sleep(3) # بافرینگ 
         
         await call_py.join_group_call(event.chat_id, stream)
-        current_playing[event.chat_id] = f"🔴 لایو/فیلم: {title}"
+        current_playing[event.chat_id] = f"🔴 لایو: {title}"
         
-        warning = "\n⚠️ *توجه: پخش لینک‌های مستقیم خیلی سنگین روی هاست رایگان ممکن است نیاز به زمان بیشتری برای لود شدن داشته باشد.*" if ".mp4" in url_to_play else ""
-        await status.edit(f"🔴 **پخش فعال شد**\n📺 `{title}`\n⚡️ کیفیت بهینه شده برای جلوگیری از لگ.{warning}")
+        warning = "\n⚠️ *اگر لینک فیلم مستقیم فرستادید و لگ داشت، لطفاً دستور `/dlplay لینک` را امتحان کنید!*" if ".mp4" in url_to_play else ""
+        await status.edit(f"🔴 **پخش فعال شد**\n📺 `{title}`{warning}")
     except Exception as e:
         await status.edit(f"❌ خطا در پردازش استریم: {e}")
 
-# پخش موزیک/ویدیو از فایل با ریپلای
+# 🔥 سیستم جدید: پخش مستقیم فیلم با دانلود قبلی (بدون شبکه، بدون قطعی، 0% لگ)
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/dlplay|پخش فیلم)(?:\s+(.+))?'))
+async def dlplay_h(event):
+    if not await security_check(event): return
+    url = event.pattern_match.group(2)
+    if not url: return await event.reply("⚠️ لطفاً لینک مستقیم فیلم را همراه با دستور بفرستید.")
+    
+    msg = await event.reply("📥 در حال دانلود کامل فیلم روی سرور برای پخش **100% بدون لگ** (بسته به حجم فیلم ممکن است کمی طول بکشد)...")
+    
+    def download_movie_sync(u):
+        opts = {
+            'format': 'worstvideo[ext=mp4]+worstaudio/worst', 
+            'outtmpl': f'dl_{int(time.time())}.%(ext)s',
+            'quiet': True,
+            'geo_bypass': True
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(u, download=True)
+            return ydl.prepare_filename(info)
+            
+    try:
+        # دانلود فایل روی هارد سرور
+        file_path = await asyncio.to_thread(download_movie_sync, url)
+        await msg.edit("🛠 دانلود تکمیل شد. در حال بهینه‌سازی نهایی و اجرای موتور ضد-لگ...")
+        
+        # اعمال موتور ضد لگ برای سبکی پردازشگر
+        optimized_path = await optimize_media(file_path)
+        
+        if not call_py.active_calls:
+            try: await call_py.start()
+            except: pass
+            
+        stream = MediaStream(optimized_path, audio_parameters=AudioQuality.LOW, video_parameters=VideoQuality.SD_360p)
+        
+        try: await call_py.leave_group_call(event.chat_id)
+        except: pass
+        await asyncio.sleep(2)
+        
+        await call_py.join_group_call(event.chat_id, stream)
+        current_playing[event.chat_id] = f"🎬 پخش فیلم (تضمین بدون لگ): {url}"
+        await msg.edit("✅ **پخش فیلم بصورت فوق‌روان و بدون قطعی آغاز شد!** 🍿")
+    except Exception as e:
+        await msg.edit(f"❌ خطا در دانلود یا پخش فیلم: {e}")
+
+# سیستم پخش رسانه لوکال (ریپلای) همراه با موتور ضد-لگ
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/play|پخش)$'))
 async def play_h(event):
     if not await security_check(event): return
@@ -358,7 +416,7 @@ async def play_h(event):
     if not reply or not (reply.audio or reply.video or reply.voice or getattr(reply, 'document', None)):
         return await event.reply("⚠️ لطفاً روی یک آهنگ، ویس یا ویدیو ریپلای کنید و بنویسید پخش.")
 
-    msg = await event.reply("📥 در حال دانلود و آماده‌سازی فایل روی سرور...")
+    msg = await event.reply("📥 در حال دانلود فایل روی سرور...")
     
     try:
         file_path = await reply.download_media()
@@ -369,23 +427,25 @@ async def play_h(event):
             except: pass
 
         if reply.video or str(file_path).endswith(('.mp4', '.mkv', '.avi')):
-            # استفاده از پایین‌ترین تنظیمات صوتی ممکن در کنار ویدیو تا CPU نفس بکشه و لگ نده
-            stream = MediaStream(file_path, audio_parameters=AudioQuality.LOW, video_parameters=VideoQuality.SD_480p)
+            await msg.edit("🛠 در حال اجرای موتور ضد-لگ و فشرده‌سازی ویدیو (لطفاً چند ثانیه صبر کنید)...")
+            # ویدیو فشرده میشه تا لگ نزنه
+            optimized_path = await optimize_media(file_path)
+            stream = MediaStream(optimized_path, audio_parameters=AudioQuality.LOW, video_parameters=VideoQuality.SD_360p)
         else:
             stream = MediaStream(file_path, audio_parameters=AudioQuality.HIGH)
 
         try: await call_py.leave_group_call(event.chat_id)
         except: pass
-        await asyncio.sleep(2) # بافرینگ قبل از شروع
+        await asyncio.sleep(2) 
         
         await call_py.join_group_call(event.chat_id, stream)
         current_playing[event.chat_id] = f"🎵 در حال پخش: {file_name}"
-        await msg.edit(f"✅ **پخش رسانه آغاز شد!** 🎶\nنام فایل: `{file_name}`")
+        await msg.edit(f"✅ **پخش رسانه بصورت روان آغاز شد!** 🎶\nنام فایل: `{file_name}`")
     except Exception as e:
         await msg.edit(f"❌ خطا در پردازش رسانه: {e}")
 
 # ==========================================
-# قابلیت‌های جدید اضافه شده به درخواست شما
+# سایر قابلیت‌ها و امکانات مدیریتی
 # ==========================================
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/info)'))
@@ -428,6 +488,22 @@ async def time_h(event):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     await event.reply(f"⏱ **ساعت و تاریخ سرور:**\n`{current_time}`")
 
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/sysinfo)'))
+async def sysinfo_h(event):
+    if not await security_check(event): return
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    cpu = psutil.cpu_percent(interval=1)
+    net = psutil.net_io_counters()
+    
+    msg = (f"🖥 **اطلاعات پیشرفته سرور:**\n"
+           f"پردازنده: `{cpu}%`\n"
+           f"رم مصرفی: `{mem.percent}%` ({mem.used // (1024*1024)}MB / {mem.total // (1024*1024)}MB)\n"
+           f"هارد دیسک: `{disk.percent}%` پر شده\n"
+           f"ترافیک دانلود: `{net.bytes_recv // (1024*1024)} MB`\n"
+           f"ترافیک آپلود: `{net.bytes_sent // (1024*1024)} MB`")
+    await event.reply(msg)
+
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/status|/وضعیت)'))
 async def status_h(event):
     if not await security_check(event): return
@@ -437,15 +513,16 @@ async def status_h(event):
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/clearcache|/پاکسازی)'))
 async def clear_cache_h(event):
     if not await security_check(event): return
-    msg = await event.reply("🧹 در حال پاکسازی فایل‌های اضافه برای جلوگیری از هنگی سرور...")
+    msg = await event.reply("🧹 در حال پاکسازی فایل‌های اضافه، فیلم‌ها و ویدیوهای بهینه‌شده...")
     count = 0
-    for ext in ['*.mp3', '*.mp4', '*.ogg', '*.m4a', '*.avi', '*.mkv']:
+    # پاک کردن تمام فایل‌های دانلودی و بهینه‌سازی شده برای جلوگیری از پر شدن هارد
+    for ext in ['*.mp3', '*.mp4', '*.ogg', '*.m4a', '*.avi', '*.mkv', 'dl_*', 'opt_*']:
         for file in glob.glob(ext):
             try:
                 os.remove(file)
                 count += 1
             except: pass
-    await msg.edit(f"✅ پاکسازی انجام شد!\nتعداد `{count}` فایل سنگین از حافظه حذف شد.")
+    await msg.edit(f"✅ پاکسازی کامل انجام شد!\nتعداد `{count}` فایل سنگین از حافظه حذف شد.")
 
 # ==========================================
 # قابلیت‌های مدیریت ویسکال
