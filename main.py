@@ -10,13 +10,15 @@ import psutil
 import gc
 import random
 import glob
+from datetime import datetime
 from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import MemorySession
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.functions.channels import GetParticipantRequest
+from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 
-# استفاده از کلاس‌های صحیح، پایدار و تست شده برای نسخه 1.2.9
+# استفاده از کلاس‌های صحیح، پایدار و تست شده
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
 
@@ -88,7 +90,7 @@ user_client = TelegramClient('user_session', API_ID, API_HASH)
 call_py = PyTgCalls(user_client)
 
 # ==========================================
-# 📊 توابع کمکی (استخراج لینک آسنکرون برای رفع تق‌تق صدا)
+# 📊 توابع استخراج لینک (فوق بهینه برای رفع لگ)
 # ==========================================
 async def get_system_info():
     mem = psutil.virtual_memory()
@@ -97,9 +99,9 @@ async def get_system_info():
     return f"🧠 RAM: {mem.percent}%\n💾 Disk: {disk.percent}%\n🖥 CPU: {cpu}%"
 
 def extract_info_sync(url):
-    # تنظیم روی 360p برای جلوگیری از لگ روی سرور رایگان Render
+    # تنظیم روی پایین‌ترین کیفیت ممکن برای جلوگیری کامل از لگ گرفتن فیلم‌ها در هاست رایگان
     ydl_opts = {
-        'format': 'best[height<=360]/best', 
+        'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst', 
         'noplaylist': True, 
         'quiet': True,
         'geo_bypass': True
@@ -123,7 +125,7 @@ async def is_admin(event):
         return True
     try:
         participant = await user_client(GetParticipantRequest(event.chat_id, event.sender_id))
-        if hasattr(participant.participant, 'admin_rights') or type(participant.participant).__name__ == 'ChannelParticipantCreator':
+        if type(participant.participant) in (ChannelParticipantAdmin, ChannelParticipantCreator):
             return True
     except: pass
     return False
@@ -138,7 +140,7 @@ async def security_check(event):
         return False
     
     if not await is_admin(event):
-        await event.reply("⚠️ شرمنده! فقط ادمین‌های این گروه میتونن دستورات پخش و لایو رو مدیریت کنن.")
+        await event.reply("⚠️ شرمنده! فقط ادمین‌های این گروه میتونن دستورات ربات رو مدیریت کنن.")
         return False
         
     return True
@@ -163,7 +165,6 @@ async def anti_annoying(event):
     try:
         await event.reply(random.choice(insults))
         await asyncio.sleep(5)
-        # پاک کردن دوطرفه پیام‌ها برای جلوگیری از اسپم
         await user_client.delete_dialog(event.sender_id, revoke=True)
     except: pass
 
@@ -203,8 +204,12 @@ async def bot_start(event):
 🔹 `/unmute` یا `صدا دار` : وصل صدای ربات
 🔹 `/volume [1-200]` : تنظیم بلندی صدا
 🔹 `/status` یا `/وضعیت` : نمایش اطلاعات فایل/لایو در حال پخش
-🔹 `/clearcache` یا `/پاکسازی` : حذف فایل‌های دانلودی برای رفع هنگی سرور
+🔹 `/clearcache` یا `/پاکسازی` : حذف فایل‌های دانلودی
 🔹 `/ping` : تست سرعت اتصال یوزربات
+🔹 `/info` : **(ریپلای)** دریافت اطلاعات فایل مدیا
+🔹 `/promote` : **(ریپلای)** ادمین کردن کاربر
+🔹 `/ban` : **(ریپلای)** اخراج کاربر از گروه
+🔹 `/time` : نمایش ساعت فعلی
 """
     await event.reply(help_text)
 
@@ -281,7 +286,7 @@ async def user_add_h(event):
 async def user_del_h(event):
     if event.sender_id != ADMIN_ID and not event.out: return
     target = event.pattern_match.group(1)
-    chat_id = event.chat_id
+    chat_id = event.event.chat_id
     if target:
         try:
             e = await user_client.get_entity(target)
@@ -295,7 +300,6 @@ async def user_del_h(event):
         save_allowed_chats(ALLOWED_CHATS)
         await event.reply(f"🗑 گروه `{chat_id}` از لیست مجاز حذف شد.")
 
-# پینگ بهینه شده (درخواست واقعی به سرور تلگرام برای گرفتن تاخیر دقیق)
 @user_client.on(events.NewMessage(pattern=r'(?i)^/ping'))
 async def ping_h(event):
     if not await security_check(event): return
@@ -305,7 +309,7 @@ async def ping_h(event):
     info = await get_system_info()
     await event.reply(f"🚀 **ربات با سرعت عالی در حال اجراست**\n📶 Ping: `{ping}ms`\n\n{info}")
 
-# لایو (بدون لگ با رزولوشن 360p و پردازش آسنکرون)
+# لایو (رفع لگ برای فیلم‌های مستقیم)
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_h(event):
     if not await security_check(event): return
@@ -316,7 +320,7 @@ async def live_h(event):
     try: await event.delete()
     except: pass
 
-    status = await user_client.send_message(event.chat_id, "📡 در حال اتصال به استریم و بهینه‌سازی کیفیت... لطفاً صبور باشید☆")
+    status = await user_client.send_message(event.chat_id, "📡 در حال بررسی و بافرینگ استریم... لطفاً چند ثانیه صبور باشید☆")
 
     try:
         stream_url, title = await get_stream_link(url_to_play)
@@ -325,36 +329,38 @@ async def live_h(event):
             try: await call_py.start()
             except: pass
 
-        # استفاده از MediaStream برای نسخه 1.2.9
+        # کیفیت صوتی پایین‌تر برای کاهش فشار روی CPU سرور رندر
         stream = MediaStream(
             stream_url,
-            audio_parameters=AudioQuality.MEDIUM, 
-            video_parameters=VideoQuality.SD_360p # تغییر به 360 برای جلوگیری از لگ سرور رایگان
+            audio_parameters=AudioQuality.LOW, 
+            video_parameters=VideoQuality.SD_480p
         )
 
         try: await call_py.leave_group_call(event.chat_id)
         except: pass
-        await asyncio.sleep(1)
+        
+        # ایجاد بافرینگ برای جلوگیری از لگ زدن لینک‌های سنگین
+        await asyncio.sleep(3) 
         
         await call_py.join_group_call(event.chat_id, stream)
-        current_playing[event.chat_id] = f"🔴 لایو: {title}"
+        current_playing[event.chat_id] = f"🔴 لایو/فیلم: {title}"
         
-        await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`\n⚡️ کیفیت پردازش روی بهینه‌ترین حالت تنظیم شد.")
+        warning = "\n⚠️ *توجه: پخش لینک‌های مستقیم خیلی سنگین روی هاست رایگان ممکن است نیاز به زمان بیشتری برای لود شدن داشته باشد.*" if ".mp4" in url_to_play else ""
+        await status.edit(f"🔴 **پخش فعال شد**\n📺 `{title}`\n⚡️ کیفیت بهینه شده برای جلوگیری از لگ.{warning}")
     except Exception as e:
-        await status.edit(f"❌ خطا در اتصال به استریم: {e}")
+        await status.edit(f"❌ خطا در پردازش استریم: {e}")
 
-# قابلیت جدید: پخش موزیک/ویدیو از فایل با ریپلای
+# پخش موزیک/ویدیو از فایل با ریپلای
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/play|پخش)$'))
 async def play_h(event):
     if not await security_check(event): return
     reply = await event.get_reply_message()
     if not reply or not (reply.audio or reply.video or reply.voice or getattr(reply, 'document', None)):
-        return await event.reply("⚠️ لطفاً روی یک آهنگ، ویس یا ویدیو ریپلای کنید و کلمه «پخش» یا «/play» را بفرستید.")
+        return await event.reply("⚠️ لطفاً روی یک آهنگ، ویس یا ویدیو ریپلای کنید و بنویسید پخش.")
 
-    msg = await event.reply("📥 در حال دانلود و آماده‌سازی فایل روی سرور (برای جلوگیری از تق‌تق صدا)...")
+    msg = await event.reply("📥 در حال دانلود و آماده‌سازی فایل روی سرور...")
     
     try:
-        # دانلود فایل در سرور
         file_path = await reply.download_media()
         file_name = reply.file.name if reply.file and hasattr(reply.file, 'name') else "فایل مدیا"
         
@@ -362,48 +368,84 @@ async def play_h(event):
             try: await call_py.start()
             except: pass
 
-        # اگر ویدیو باشه، هم تصویر داره هم صدا
         if reply.video or str(file_path).endswith(('.mp4', '.mkv', '.avi')):
-            stream = MediaStream(file_path, audio_parameters=AudioQuality.MEDIUM, video_parameters=VideoQuality.SD_360p)
+            # استفاده از پایین‌ترین تنظیمات صوتی ممکن در کنار ویدیو تا CPU نفس بکشه و لگ نده
+            stream = MediaStream(file_path, audio_parameters=AudioQuality.LOW, video_parameters=VideoQuality.SD_480p)
         else:
-            # اگر فقط صدا باشه
             stream = MediaStream(file_path, audio_parameters=AudioQuality.HIGH)
 
         try: await call_py.leave_group_call(event.chat_id)
         except: pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(2) # بافرینگ قبل از شروع
         
         await call_py.join_group_call(event.chat_id, stream)
         current_playing[event.chat_id] = f"🎵 در حال پخش: {file_name}"
         await msg.edit(f"✅ **پخش رسانه آغاز شد!** 🎶\nنام فایل: `{file_name}`")
     except Exception as e:
-        await msg.edit(f"❌ خطا در پردازش یا پخش رسانه: {e}")
+        await msg.edit(f"❌ خطا در پردازش رسانه: {e}")
 
 # ==========================================
 # قابلیت‌های جدید اضافه شده به درخواست شما
 # ==========================================
 
-# 1. وضعیت پخش فعلی
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/info)'))
+async def info_h(event):
+    if not await security_check(event): return
+    reply = await event.get_reply_message()
+    if not reply or not reply.media:
+        return await event.reply("⚠️ لطفاً روی یک آهنگ، ویدیو یا فایل ریپلای کنید.")
+    
+    file_size = reply.file.size / (1024 * 1024) if reply.file else 0
+    file_name = reply.file.name if reply.file and hasattr(reply.file, 'name') else "نامشخص"
+    duration = reply.file.duration if reply.file and hasattr(reply.file, 'duration') else "نامشخص"
+    ext = reply.file.ext if reply.file and hasattr(reply.file, 'ext') else ""
+    
+    await event.reply(f"📊 **اطلاعات فایل:**\n🔹 نام: `{file_name}`\n🔸 فرمت: `{ext}`\n🔹 حجم: `{file_size:.2f} MB`\n🔸 تایم: `{duration} ثانیه`")
+
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/promote)'))
+async def promote_h(event):
+    if not await security_check(event): return
+    reply = await event.get_reply_message()
+    if not reply: return await event.reply("⚠️ روی پیام شخص مورد نظر ریپلای کنید.")
+    try:
+        await user_client.edit_admin(event.chat_id, reply.sender_id, is_admin=True, change_info=True, post_messages=True, edit_messages=True, delete_messages=True, ban_users=True, invite_users=True, pin_messages=True, add_admins=False)
+        await event.reply("✅ کاربر با موفقیت ادمین شد!")
+    except Exception as e: await event.reply(f"❌ خطا (ربات باید مدیر کامل گروه باشد): {e}")
+
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/ban)'))
+async def ban_h(event):
+    if not await security_check(event): return
+    reply = await event.get_reply_message()
+    if not reply: return await event.reply("⚠️ روی پیام شخص مورد نظر ریپلای کنید.")
+    try:
+        await user_client.edit_permissions(event.chat_id, reply.sender_id, view_messages=False)
+        await event.reply("🚫 کاربر با موفقیت از گروه بن و اخراج شد!")
+    except Exception as e: await event.reply(f"❌ خطا: {e}")
+
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/time)'))
+async def time_h(event):
+    if not await security_check(event): return
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await event.reply(f"⏱ **ساعت و تاریخ سرور:**\n`{current_time}`")
+
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/status|/وضعیت)'))
 async def status_h(event):
     if not await security_check(event): return
     now_playing = current_playing.get(event.chat_id, "هیچ چیزی در حال پخش نیست.")
     await event.reply(f"📻 **وضعیت ویسکال گروه:**\n{now_playing}")
 
-# 2. پاکسازی کش (بسیار مهم برای سرورهای رایگان)
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/clearcache|/پاکسازی)'))
 async def clear_cache_h(event):
     if not await security_check(event): return
-    msg = await event.reply("🧹 در حال پاکسازی فایل‌های اضافه از روی سرور...")
+    msg = await event.reply("🧹 در حال پاکسازی فایل‌های اضافه برای جلوگیری از هنگی سرور...")
     count = 0
-    # پاک کردن تمام فایل‌های دانلودی آهنگ و ویدیو
     for ext in ['*.mp3', '*.mp4', '*.ogg', '*.m4a', '*.avi', '*.mkv']:
         for file in glob.glob(ext):
             try:
                 os.remove(file)
                 count += 1
             except: pass
-    await msg.edit(f"✅ پاکسازی انجام شد!\nتعداد `{count}` فایل از حافظه سرور حذف شد تا سرعت ربات بالا بماند.")
+    await msg.edit(f"✅ پاکسازی انجام شد!\nتعداد `{count}` فایل سنگین از حافظه حذف شد.")
 
 # ==========================================
 # قابلیت‌های مدیریت ویسکال
@@ -458,7 +500,7 @@ async def stop_h(event):
         await call_py.leave_group_call(event.chat_id)
         if event.chat_id in current_playing:
             del current_playing[event.chat_id]
-        gc.collect() # خالی کردن رم
+        gc.collect() 
         await event.reply("⏹ استریم قطع و ربات از ویسکال خارج شد. روز خوبی داشته باشید♡.")
     except Exception as e: await event.reply(f"❌ خطا: {e}")
 
@@ -473,7 +515,6 @@ async def main():
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     
     print("🚀 Starting...")
-    # توکن مستقیماً درون کد لود شد
     await bot.start(bot_token=BOT_TOKEN)
     try:
         await user_client.connect()
