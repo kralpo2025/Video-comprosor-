@@ -100,7 +100,7 @@ user_client = TelegramClient('user_session', API_ID, API_HASH)
 call_py = PyTgCalls(user_client)
 
 # ==========================================
-# 📊 توابع کمکی (استخراج لینک، دانلود، باز کردن ویسکال)
+# 📊 توابع کمکی (استخراج لینک مستقیم و بدون لگ)
 # ==========================================
 async def get_system_info():
     mem = psutil.virtual_memory()
@@ -109,7 +109,7 @@ async def get_system_info():
     return f"🧠 RAM: {mem.percent}%\n💾 Disk: {disk.percent}%\n🖥 CPU: {cpu}%"
 
 async def ensure_vc(chat_id):
-    """استارت خودکار ویسکال در صورت بسته بودن"""
+    """استارت خودکار ویسکال در صورت بسته بودن بدون بستن تماس قبلی"""
     try:
         entity = await user_client.get_input_entity(chat_id)
         await user_client(CreateGroupCallRequest(
@@ -117,16 +117,16 @@ async def ensure_vc(chat_id):
             random_id=random.randint(10000, 999999)
         ))
         await asyncio.sleep(2) # صبر برای ایجاد کامل ویسکال
-    except: pass # اگر از قبل باز باشه یا دسترسی نباشه ارور میده که مهم نیست
+    except: pass # اگر از قبل باز باشه ارور میده که نادیده می‌گیریم
 
 async def download_telethon_media(message, status_msg):
-    """دانلود مدیا تلگرام با نمایش درصد پیشرفت"""
+    """دانلود مدیا محلی تلگرام با نمایش درصد پیشرفت"""
     last_edit_time = time.time()
     
     async def progress_callback(current, total):
         nonlocal last_edit_time
         now = time.time()
-        if now - last_edit_time > 2.5: # آپدیت هر 2.5 ثانیه برای جلوگیری از فلود
+        if now - last_edit_time > 2.5: # آپدیت هر 2.5 ثانیه
             percent = round((current / total) * 100, 1)
             try:
                 await status_msg.edit(f"📥 در حال دانلود روی سرور...\n📊 پیشرفت: `{percent}%`")
@@ -136,40 +136,20 @@ async def download_telethon_media(message, status_msg):
     file_path = await message.download_media(file="downloads/", progress_callback=progress_callback)
     return file_path
 
-async def download_ytdlp_media(url, status_msg, loop):
-    """دانلود از یوتیوب، اینستاگرام و لینک مستقیم فیلم با yt-dlp و نمایش درصد"""
-    last_edit_time = time.time()
-
-    def my_hook(d):
-        nonlocal last_edit_time
-        if d['status'] == 'downloading':
-            now = time.time()
-            if now - last_edit_time > 3:
-                percent = d.get('_percent_str', 'N/A')
-                speed = d.get('_speed_str', 'N/A')
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        status_msg.edit(f"📥 در حال دانلود از لینک...\n📊 پیشرفت: `{percent}`\n⚡️ سرعت: `{speed}`"),
-                        loop
-                    )
-                    last_edit_time = now
-                except: pass
-
-    ydl_opts = {
-        'format': 'best', # بهترین کیفیت اصلی (بدون افت)
-        'outtmpl': 'downloads/%(id)s_%(title)s.%(ext)s',
-        'progress_hooks': [my_hook],
-        'quiet': True,
-        'geo_bypass': True
-    }
-
-    def run_dl():
+async def get_direct_stream_link(url):
+    """گرفتن لینک مستقیم بدون دانلود جهت پخش بدون لگ مشابه لایو"""
+    def extract():
+        ydl_opts = {
+            'format': 'best[height<=480]/best', # استخراج کیفیت مناسب و روان
+            'noplaylist': True,
+            'quiet': True,
+            'geo_bypass': True
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            return ydl.prepare_filename(info)
-
-    file_path = await asyncio.to_thread(run_dl)
-    return file_path
+            return ydl.extract_info(url, download=False)
+    
+    info = await asyncio.to_thread(extract)
+    return info.get('url'), info.get('title', 'Media Stream')
 
 # ==========================================
 # 👮‍♂️ سیستم امنیتی
@@ -207,22 +187,28 @@ async def bot_start(event):
         status_text = f"🟢 **آنلاین** (`{me.first_name}`)"
 
     help_text = f"""
-🤖 **سیستم مدیریت استریم و رسانه**
+🤖 **سیستم مدیریت استریم و رسانه فوق‌سریع**
 
 وضعیت یوزربات: {status_text}
 
-📋 **دستورات استارت:**
-🔸 `/phone [شماره]` | `/code [کد]` | `/password [رمز]`
-🔸 `/add [لینک/آیدی]` : مجاز کردن کانال
+📋 **دستورات لاگین (در همین ربات):**
+🔸 `/phone [شماره]` : ارسال کد ورود به اکانت تلگرام
+🔸 `/code [کد]` : تایید کد ورود (مثال: /code 12345)
+🔸 `/password [رمز]` : وارد کردن رمز دو مرحله‌ای (در صورت وجود)
+🔸 `/add [لینک/آیدی]` : افزودن کانال به لیست مجاز ربات
 
-🛠 **دستورات داخل گروه‌ها:**
-🔹 `/live [لینک]` یا `لایو [لینک]` : پخش لینک زنده
-🔹 `/play [لینک]` یا `پخش` : پخش مستقیم فایل/فیلم از نت یا ریپلای
-🔹 `/stop` یا `قطع` : توقف و خروج
-🔹 `ولوم 100` : تنظیم بلندی صدا
-🔹 `/clearcache` : پاکسازی هارد سرور
+🛠 **دستورات داخل گروه‌ها و کانال‌های مجاز:**
+🔹 `/add` : مجاز کردن گروه فعلی (ثبت در لیست)
+🔹 `/del` : حذف گروه از لیست مجازها
+🔹 `/live [لینک]` یا `لایو [لینک]` : پخش زنده شبکه‌ها
+🔹 `/play [لینک]` یا `پخش` : پخش هر نوع فیلم، ویدیو، موزیک و لینک (اینستا/یوتیوب/لینک مستقیم) بدون لگ
+🔹 `توقف` یا `/pause` : فریز کردن و توقف موقت در همان نقطه بدون قطع تماس
+🔹 `ادامه` یا `/resume` : ادامه پخش از نقطه متوقف شده
+🔹 `/stop` یا `قطع` : توقف کامل، خروج از ویسکال و پاکسازی حافظه سرور
+🔹 `ولوم 100` یا `/volume 100` : تنظیم بلندی صدا (1 تا 200)
+🔹 `/clearcache` : پاکسازی دستی هارد سرور
 
-👇 برای کنترل از راه دور از دکمه زیر استفاده کنید:
+👇 برای کنترل کانال‌ها از راه دور، از دکمه زیر استفاده کنید:
 """
     buttons = [[Button.inline("🎛 پنل پخش رسانه (کنترل از راه دور)", b"open_panel")]]
     await event.reply(help_text, buttons=buttons)
@@ -231,7 +217,6 @@ async def bot_start(event):
 async def panel_callback(event):
     if event.sender_id != ADMIN_ID: return
     buttons = []
-    # لود کردن اسم کانال‌ها برای ساخت دکمه
     for chat_id in ALLOWED_CHATS:
         if chat_id == ADMIN_ID: continue
         try:
@@ -253,53 +238,52 @@ async def select_chat_callback(event):
     admin_states[ADMIN_ID] = {'action': 'waiting_for_media', 'target_chat': chat_id}
     await event.edit("✅ **کانال انتخاب شد!**\n\nحالا لطفاً پیام خود را بفرستید. می‌توانید:\n1️⃣ یک لینک فیلم/یوتیوب/اینستاگرام بفرستید.\n2️⃣ یک فایل صوتی/تصویری را همینجا ارسال (یا فوروارد) کنید.\n\nربات به طور خودکار آن را در کانال مورد نظر پخش خواهد کرد.")
 
-# هندل کردن مدیایی که کاربر در ربات می‌فرستد برای پخش از راه دور
+# هندل کردن پخش از راه دور (پنل شیشه‌ای)
 @bot.on(events.NewMessage(func=lambda e: e.is_private and e.sender_id == ADMIN_ID))
 async def handle_admin_media(event):
     state = admin_states.get(ADMIN_ID)
     if not state or state.get('action') != 'waiting_for_media': return
     
-    if event.text and event.text.startswith('/'): return # اگر دستور بود کاری نکن
+    if event.text and event.text.startswith('/'): return
     
     target_chat = state['target_chat']
-    del admin_states[ADMIN_ID] # ریست کردن وضعیت
+    del admin_states[ADMIN_ID] 
     
     msg = await event.reply("⏳ در حال پردازش درخواست شما برای پخش در کانال...")
     
     try:
-        await ensure_vc(target_chat) # باز کردن ویسکال در صورت بسته بودن
+        await ensure_vc(target_chat)
         
-        file_path = None
-        # اگر لینک سوشال مدیا یا فیلم فرستاد
         if event.text and ("http://" in event.text or "https://" in event.text):
             url = event.text.strip()
-            file_path = await download_ytdlp_media(url, msg, asyncio.get_event_loop())
-        # اگر فایل مدیا (ویدیو، آهنگ) فرستاد
+            # پخش مستقیم لینک مثل لایو بدون دانلود
+            stream_url, title = await get_direct_stream_link(url)
+            stream = MediaStream(stream_url, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
         elif event.media:
             file_path = await download_telethon_media(event, msg)
-            
-        if not file_path:
-            return await msg.edit("❌ خطا: فرمت پشتیبانی نمی‌شود یا لینکی یافت نشد.")
+            if not file_path:
+                return await msg.edit("❌ خطا: فرمت پشتیبانی نمی‌شود.")
+            stream = MediaStream(file_path, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
 
-        await msg.edit("🛠 فایل دانلود شد! در حال پخش در ویسکال کانال...")
+        await msg.edit("🛠 در حال پخش در ویسکال کانال...")
 
         if not call_py.active_calls:
             try: await call_py.start()
             except: pass
 
-        stream = MediaStream(file_path, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
-        try: await call_py.leave_group_call(target_chat)
-        except: pass
-        await asyncio.sleep(1)
-        
-        await call_py.join_group_call(target_chat, stream)
+        # استفاده از سیستم جایگزینی استریم بدون خروج از ویسکال
+        try:
+            await call_py.change_stream(target_chat, stream)
+        except Exception:
+            await call_py.join_group_call(target_chat, stream)
+            
         current_playing[target_chat] = "پخش از طریق پنل مدیریت"
         await msg.edit("✅ **با موفقیت در کانال پخش شد!** 🎶\nنکته: فایل پس از پایان با دستور /stop از هارد پاک می‌شود.")
 
     except Exception as e:
         await msg.edit(f"❌ خطا در پردازش رسانه: {e}")
 
-# (دستورات لاگین مثل قبل)
+# (دستورات لاگین)
 @bot.on(events.NewMessage(pattern='/phone (.+)'))
 async def ph(event):
     if event.sender_id != ADMIN_ID: return
@@ -353,7 +337,7 @@ async def user_add_h(event):
     if chat_id not in ALLOWED_CHATS:
         ALLOWED_CHATS.append(chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply("✅ مجاز شد.")
+        await event.reply("✅ گروه به لیست مجاز افزوده شد.")
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^/del(?:\s+(.+))?'))
 async def user_del_h(event):
@@ -361,14 +345,14 @@ async def user_del_h(event):
     if event.chat_id in ALLOWED_CHATS:
         ALLOWED_CHATS.remove(event.chat_id)
         save_allowed_chats(ALLOWED_CHATS)
-        await event.reply("🗑 حذف شد.")
+        await event.reply("🗑 گروه از لیست مجاز حذف شد.")
 
 # پخش استریم زنده
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/live|لایو)(?:\s+(.+))?'))
 async def live_h(event):
     if not await security_check(event): return
     url_to_play = event.pattern_match.group(2) or DEFAULT_LIVE_URL
-    try: await event.delete() # پاک کردن پیام حاوی دستور/لینک
+    try: await event.delete() 
     except: pass
 
     status = await user_client.send_message(event.chat_id, "📡 در حال اتصال...")
@@ -386,17 +370,19 @@ async def live_h(event):
             except: pass
 
         stream = MediaStream(stream_url, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
-        try: await call_py.leave_group_call(event.chat_id)
-        except: pass
-        await asyncio.sleep(1) 
         
-        await call_py.join_group_call(event.chat_id, stream)
+        # بدون قطع کردن تماس جایگزین میکنیم
+        try:
+            await call_py.change_stream(event.chat_id, stream)
+        except Exception:
+            await call_py.join_group_call(event.chat_id, stream)
+            
         current_playing[event.chat_id] = f"🔴 لایو: {title}"
         await status.edit(f"🔴 **پخش زنده فعال شد**\n📺 `{title}`")
     except Exception as e:
         await status.edit(f"❌ خطا: {e}")
 
-# پخش فیلم مستقیم از اینترنت (دانلود روی هارد + پخش) یا ریپلای
+# پخش هوشمند ویدیو و مدیا (بدون لگ و با سیستم استریم مستقیم)
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/play|پخش)(?:\s+(.+))?'))
 async def play_h(event):
     if not await security_check(event): return
@@ -405,59 +391,63 @@ async def play_h(event):
     reply = await event.get_reply_message()
     
     if not url_arg and not (reply and (reply.audio or reply.video or getattr(reply, 'document', None))):
-        return await event.reply("⚠️ لطفاً یک لینک (فیلم/یوتیوب/اینستا) همراه دستور بفرستید یا روی یک فایل ریپلای کنید.")
+        return await event.reply("⚠️ لطفاً یک لینک همراه دستور بفرستید یا روی یک فایل ریپلای کنید.")
 
-    try: await event.delete() # حذف لینک ارسالی تو گروه برای تمیزی
+    try: await event.delete() # حذف لینک ارسالی از گروه
     except: pass
 
-    msg = await user_client.send_message(event.chat_id, "📥 آماده‌سازی و دانلود فایل مستقیم روی هارد (بدون فشرده‌سازی و بدون لگ)...")
+    msg = await user_client.send_message(event.chat_id, "⏳ در حال آماده‌سازی مدیا...")
     
     try:
         await ensure_vc(event.chat_id) # اطمینان از باز بودن ویسکال
         
-        file_path = None
+        stream = None
         if url_arg:
-            file_path = await download_ytdlp_media(url_arg, msg, asyncio.get_event_loop())
+            # استریم مستقیم لینک بدون دانلود جهت جلوگیری از لگ کامل
+            stream_url, title = await get_direct_stream_link(url_arg)
+            stream = MediaStream(stream_url, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+            current_playing[event.chat_id] = f"🎬 پخش ویدیو/استریم: {title}"
+            
         elif reply:
             file_path = await download_telethon_media(reply, msg)
+            if not file_path:
+                return await msg.edit("❌ خطا در دانلود فایل محلی تلگرام.")
+            stream = MediaStream(file_path, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+            current_playing[event.chat_id] = f"🎵 پخش مدیا محلی"
 
-        if not file_path:
-            return await msg.edit("❌ خطا در دانلود فایل.")
-
-        await msg.edit("🛠 دانلود تکمیل! در حال اجرای فایل در ویسکال...")
+        await msg.edit("🛠 در حال پخش در ویسکال...")
         
         if not call_py.active_calls:
             try: await call_py.start()
             except: pass
 
-        # پخش مستقیم فایل از روی هارد بدون هیچ گونه کامپرس و تبدیل
-        stream = MediaStream(file_path, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
-
-        try: await call_py.leave_group_call(event.chat_id)
-        except: pass
-        await asyncio.sleep(1) 
-        
-        await call_py.join_group_call(event.chat_id, stream)
-        current_playing[event.chat_id] = f"🎵 در حال پخش از فایل لوکال"
-        await msg.edit(f"✅ **پخش رسانه بصورت کاملا روان آغاز شد!** 🎶\nنکته: فایل پس از پایان پاکسازی می‌شود.")
+        # استریم را جایگزین میکند، اگر ویسکال خاموش بود جوین میشود (رفع مشکل قطع شدن)
+        try:
+            await call_py.change_stream(event.chat_id, stream)
+        except Exception:
+            await call_py.join_group_call(event.chat_id, stream)
+            
+        await msg.edit(f"✅ **پخش رسانه بصورت کاملا روان و بدون لگ آغاز شد!** 🎶\nنکته: در صورت استفاده از لینک مستقیم فیلم، هیچ لگی رخ نخواهد داد.")
     except Exception as e:
         await msg.edit(f"❌ خطا در پردازش رسانه: {e}")
 
 # ==========================================
-# قابلیت‌های مدیریت ویسکال
+# قابلیت‌های مدیریت ویسکال (توقف موقت درجا و ادامه)
 # ==========================================
-@user_client.on(events.NewMessage(pattern=r'(?i)^(/pause|توقف موقت)'))
+@user_client.on(events.NewMessage(pattern=r'(?i)^(/pause|توقف موقت|توقف)'))
 async def pause_h(event):
     if not await security_check(event): return
     try:
+        # متوقف کردن در همون لحظه بدون خروج
         await call_py.pause_stream(event.chat_id)
-        await event.reply("⏸ پخش موقتاً متوقف شد.")
+        await event.reply("⏸ پخش متوقف شد. (برای ادامه بفرستید: `ادامه`)")
     except: pass
 
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/resume|ادامه)'))
 async def resume_h(event):
     if not await security_check(event): return
     try:
+        # ادامه از همون نقطه‌ای که توقف زده شد
         await call_py.resume_stream(event.chat_id)
         await event.reply("▶️ پخش ادامه یافت.")
     except: pass
@@ -496,20 +486,27 @@ async def clear_cache_h(event):
     clean_downloads()
     await event.reply("✅ هارد سرور به طور کامل پاکسازی شد.")
 
-# دستور Stop به همراه پاکسازی هوشمند هارد
+# دستور Stop با فیلتر ارور اعصاب‌خردکن
 @user_client.on(events.NewMessage(pattern=r'(?i)^(/stop|قطع)'))
 async def stop_h(event):
     if not await security_check(event): return
     try:
         await call_py.leave_group_call(event.chat_id)
-        if event.chat_id in current_playing:
-            del current_playing[event.chat_id]
-        
-        # پاکسازی خودکار فایل‌ها بعد از اتمام کار
-        clean_downloads()
-        gc.collect() 
-        await event.reply("⏹ پخش قطع شد و فایل‌ها جهت خالی شدن هارد سرور پاک شدند. روز خوبی داشته باشید♡.")
-    except Exception as e: await event.reply(f"❌ خطا: {e}")
+    except Exception as e:
+        # فیلتر کردن ارور خروج زمانی که در ویسکال نیست
+        error_msg = str(e).lower()
+        if "not in a group call" in error_msg or "isn't in a group call" in error_msg:
+            pass # نادیده گرفتن
+        else:
+            pass
+
+    # پاکسازی و پیغام در هر صورت انجام میشه
+    if event.chat_id in current_playing:
+        del current_playing[event.chat_id]
+    
+    clean_downloads()
+    gc.collect() 
+    await event.reply("⏹ پخش قطع شد و ربات از ویسکال خارج شد. روز خوبی داشته باشید♡.")
 
 # ==========================================
 # 🌐 اجرا
